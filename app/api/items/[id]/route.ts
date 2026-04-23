@@ -21,8 +21,8 @@ export async function GET(
   const { id } = await params;
 
   const item = await queryOne(
-    `SELECT * FROM items WHERE id = $1 AND user_id = $2`,
-    [id, session.userId]
+    `SELECT * FROM items WHERE id = $1`,
+    [id]
   );
   if (!item) return NextResponse.json({ error: 'not found' }, { status: 404 });
   return NextResponse.json({ item });
@@ -70,16 +70,15 @@ export async function PATCH(
     values.push(v);
   });
 
-  // If category changed to/from 'dress', keep occupies_slots in sync
   if (parsed.data.category) {
     sets.push(`occupies_slots = $${values.length + 1}`);
     values.push(parsed.data.category === 'dress' ? ['shirt', 'pants'] : []);
   }
 
-  values.push(id, session.userId);
+  values.push(id);
   const result = await queryOne(
     `UPDATE items SET ${sets.join(', ')}
-     WHERE id = $${values.length - 1} AND user_id = $${values.length}
+     WHERE id = $${values.length}
      RETURNING id`,
     values
   );
@@ -96,13 +95,12 @@ export async function DELETE(
   const { id } = await params;
 
   const item = await queryOne<{ image_path: string; image_nobg_path: string | null; thumb_path: string | null }>(
-    `SELECT image_path, image_nobg_path, thumb_path FROM items
-     WHERE id = $1 AND user_id = $2`,
-    [id, session.userId]
+    `SELECT image_path, image_nobg_path, thumb_path FROM items WHERE id = $1`,
+    [id]
   );
   if (!item) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
-  await query(`DELETE FROM items WHERE id = $1 AND user_id = $2`, [id, session.userId]);
+  await query(`DELETE FROM items WHERE id = $1`, [id]);
   await Promise.all([
     deleteFile(item.image_path),
     deleteFile(item.image_nobg_path),

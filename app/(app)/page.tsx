@@ -88,15 +88,16 @@ export default function HomePage() {
   return (
     <div className="px-6 py-8 max-w-5xl mx-auto">
       <section className="mb-10 animate-fade-up">
-        <div className="eyebrow mb-2">Today</div>
+        <div className="eyebrow mb-2">— Today —</div>
         {loading ? (
-          <div className="font-display text-3xl text-ink-400">Reading the forecast…</div>
+          <div className="wordmark text-3xl italic text-pink-300">Reading the forecast…</div>
         ) : data?.weather ? (
           <div>
-            <h1 className="font-display text-4xl md:text-5xl leading-tight">
-              {Math.round(data.weather.temp_avg_f)}°, {data.weather.summary}.
+            <h1 className="wordmark italic text-5xl md:text-6xl leading-[1.05] text-ink-900">
+              {Math.round(data.weather.temp_avg_f)}°,{' '}
+              <span className="text-pink-500">{data.weather.summary}</span>.
             </h1>
-            <p className="mt-2 text-sm text-ink-600">
+            <p className="mt-3 text-sm text-ink-600">
               Range {Math.round(data.weather.temp_min_f)}–{Math.round(data.weather.temp_max_f)}°F
               {data.weather.precip_chance > 20 && <> · {data.weather.precip_chance}% precip</>}
             </p>

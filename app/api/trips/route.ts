@@ -6,17 +6,16 @@ import { getForecast } from '@/lib/weather';
 import { planPacking } from '@/lib/anthropic';
 
 export async function GET() {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const trips = await query(
     `SELECT id, name, destination, start_date, end_date, occasions,
             selected_item_ids, generated_outfits, weather_forecast, notes, created_at
-     FROM trips WHERE user_id = $1 ORDER BY start_date DESC`,
-    [session.userId]
+     FROM trips ORDER BY start_date DESC`,
+    []
   );
   return NextResponse.json({ trips });
 }
@@ -30,14 +29,12 @@ const createSchema = z.object({
   end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   occasions: z.array(z.string()).default([]),
   notes: z.string().nullable().optional(),
-  // Optional toggle to skip AI and just store the trip
   generate: z.boolean().optional().default(true),
 });
 
 export async function POST(req: NextRequest) {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
@@ -47,7 +44,6 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return NextResponse.json({ error: 'invalid input' }, { status: 400 });
   const t = parsed.data;
 
-  // Figure out forecast span (up to 16 days out)
   const daysBetween = Math.ceil(
     (new Date(t.end_date).getTime() - new Date(t.start_date).getTime()) / 86400000
   ) + 1;
@@ -65,8 +61,8 @@ export async function POST(req: NextRequest) {
     const items = await query(
       `SELECT id, category, sub_category, colors, style_tags, season_tags,
               warmth_score, formality_score, brand, name, occupies_slots
-       FROM items WHERE user_id = $1`,
-      [session.userId]
+       FROM items`,
+      []
     );
     try {
       generated = await planPacking(JSON.stringify(items), {
@@ -87,12 +83,11 @@ export async function POST(req: NextRequest) {
 
   const row = await queryOne<{ id: string }>(
     `INSERT INTO trips (
-       user_id, name, destination, destination_lat, destination_lon,
+       name, destination, destination_lat, destination_lon,
        start_date, end_date, occasions, selected_item_ids,
        generated_outfits, weather_forecast, notes
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
     [
-      session.userId,
       t.name,
       t.destination,
       t.destination_lat,

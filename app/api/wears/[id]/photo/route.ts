@@ -8,17 +8,16 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const { id } = await params;
 
   const existing = await queryOne<{ photo_path: string | null }>(
-    `SELECT photo_path FROM outfit_wears WHERE id = $1 AND user_id = $2`,
-    [id, session.userId]
+    `SELECT photo_path FROM outfit_wears WHERE id = $1`,
+    [id]
   );
   if (!existing) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
@@ -28,14 +27,13 @@ export async function POST(
 
   const buf = Buffer.from(await photo.arrayBuffer());
   const processed = await processJpeg(buf, { maxW: 1600, maxH: 1600, quality: 85 });
-  const photoPath = await saveBuffer('wears', session.userId, processed.buffer, 'jpg');
+  const photoPath = await saveBuffer('wears', processed.buffer, 'jpg');
 
   await query(
-    `UPDATE outfit_wears SET photo_path = $1 WHERE id = $2 AND user_id = $3`,
-    [photoPath, id, session.userId]
+    `UPDATE outfit_wears SET photo_path = $1 WHERE id = $2`,
+    [photoPath, id]
   );
 
-  // Clean up the old one
   if (existing.photo_path) await deleteFile(existing.photo_path);
 
   return NextResponse.json({ photo_path: photoPath });

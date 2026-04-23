@@ -32,16 +32,21 @@ function VerifyInner() {
   return (
     <main className="min-h-screen flex items-center justify-center px-6">
       <div className="w-full max-w-sm animate-fade-up">
-        <div className="mb-12">
-          <div className="eyebrow mb-3">Verify</div>
-          <h1 className="font-display text-4xl leading-tight">Check your email</h1>
-          <p className="mt-3 text-sm text-ink-600 leading-relaxed">
-            A six-digit code was sent to <span className="text-ink-900">{email}</span>.
+        <div className="mb-12 text-center">
+          <div className="text-[10px] uppercase tracking-[0.4em] text-pink-500 font-medium mb-4">
+            ❦ &nbsp; Verify &nbsp; ❦
+          </div>
+          <h1 className="wordmark text-[48px] leading-none text-ink-900 italic">
+            Check your email
+          </h1>
+          <p className="mt-5 text-sm text-ink-600 leading-relaxed">
+            A six-digit code was sent to{' '}
+            <span className="text-pink-700 font-medium">{email}</span>.
           </p>
         </div>
         <form onSubmit={onSubmit} className="space-y-8">
           <div>
-            <label className="label block mb-2">Code</label>
+            <label className="label block mb-2 text-center">Code</label>
             <input
               inputMode="numeric"
               autoComplete="one-time-code"
@@ -50,12 +55,12 @@ function VerifyInner() {
               required
               value={code}
               onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-              className="input font-mono text-2xl tracking-[0.4em] text-center"
+              className="input font-mono text-3xl tracking-[0.4em] text-center text-pink-700"
               placeholder="000000"
               autoFocus
             />
           </div>
-          {error && <p className="text-sm text-clay-700">{error}</p>}
+          {error && <p className="text-sm text-pink-700 text-center">{error}</p>}
           <button type="submit" disabled={loading || code.length !== 6} className="btn w-full disabled:opacity-50">
             {loading ? 'Verifying…' : 'Enter'}
           </button>

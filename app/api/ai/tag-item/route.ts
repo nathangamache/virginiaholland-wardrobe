@@ -17,7 +17,12 @@ export async function POST(req: NextRequest) {
 
   const buf = Buffer.from(await image.arrayBuffer());
   const base64 = buf.toString('base64');
-  const mediaType = image.type && image.type.startsWith('image/') ? image.type : 'image/jpeg';
+
+  // Anthropic accepts only these four image MIME types. If the browser
+  // reports anything else (HEIC/AVIF/TIFF/unknown), we default to JPEG —
+  // client-side normalization should have already re-encoded to JPEG.
+  const ANTHROPIC_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+  const mediaType = ANTHROPIC_TYPES.has(image.type) ? image.type : 'image/jpeg';
 
   try {
     const tagged = await tagItemImage(base64, mediaType);

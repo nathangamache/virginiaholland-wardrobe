@@ -16,10 +16,10 @@ export function NavBar() {
   const pathname = usePathname();
   return (
     <nav
-      className="fixed bottom-0 inset-x-0 z-40 bg-ivory-50/95 backdrop-blur border-t border-ivory-200"
+      className="fixed bottom-0 inset-x-0 z-40 bg-pink-50/95 backdrop-blur border-t border-pink-200"
       style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
     >
-      <div className="max-w-5xl mx-auto grid grid-cols-5">
+      <div className="max-w-5xl mx-auto grid grid-cols-5 relative">
         {tabs.map((t) => {
           const active = t.match(pathname);
           const Icon = t.icon;
@@ -27,12 +27,17 @@ export function NavBar() {
             <Link
               key={t.href}
               href={t.href}
-              className={`flex flex-col items-center justify-center py-3 gap-1 transition-colors ${
-                active ? 'text-ink-900' : 'text-ink-400'
+              className={`relative flex flex-col items-center justify-center py-3 gap-1 transition-colors ${
+                active ? 'text-pink-700' : 'text-ink-400 hover:text-pink-500'
               }`}
             >
-              <Icon className="w-5 h-5" strokeWidth={1.5} />
-              <span className="text-[10px] uppercase tracking-[0.15em] font-medium">{t.label}</span>
+              {active && (
+                <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-pink-500" />
+              )}
+              <Icon className="w-5 h-5" strokeWidth={active ? 2 : 1.5} />
+              <span className={`text-[10px] uppercase tracking-[0.15em] font-medium ${active ? 'font-semibold' : ''}`}>
+                {t.label}
+              </span>
             </Link>
           );
         })}

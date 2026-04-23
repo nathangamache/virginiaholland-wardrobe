@@ -32,7 +32,7 @@ export default function TripsPage() {
       <div className="flex items-baseline justify-between mb-8">
         <div>
           <div className="eyebrow mb-1">Packing</div>
-          <h1 className="font-display text-4xl leading-tight">Trips</h1>
+          <h1 className="wordmark italic text-5xl leading-none text-ink-900">Trips</h1>
         </div>
         <button onClick={() => setShowNew(true)} className="btn">
           <Plus className="w-4 h-4" /> New trip

@@ -6,9 +6,8 @@ import { saveBuffer } from '@/lib/storage';
 import { processJpeg } from '@/lib/image';
 
 export async function GET() {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
@@ -16,10 +15,9 @@ export async function GET() {
   const wears = await query(
     `SELECT id, outfit_id, item_ids, worn_on, weather_snapshot, photo_path, notes, created_at
      FROM outfit_wears
-     WHERE user_id = $1
      ORDER BY worn_on DESC, created_at DESC
      LIMIT 200`,
-    [session.userId]
+    []
   );
   return NextResponse.json({ wears });
 }
@@ -33,9 +31,8 @@ const logSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
@@ -62,7 +59,7 @@ export async function POST(req: NextRequest) {
     if (photo) {
       const buf = Buffer.from(await photo.arrayBuffer());
       const processed = await processJpeg(buf, { maxW: 1600, maxH: 1600, quality: 85 });
-      photoPath = await saveBuffer('wears', session.userId, processed.buffer, 'jpg');
+      photoPath = await saveBuffer('wears', processed.buffer, 'jpg');
     }
   } else {
     const body = await req.json().catch(() => null);
@@ -74,16 +71,16 @@ export async function POST(req: NextRequest) {
   }
 
   const row = await queryOne<{ id: string }>(
-    `INSERT INTO outfit_wears (user_id, outfit_id, item_ids, worn_on, weather_snapshot, photo_path, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-    [session.userId, outfitId, itemIds, wornOn, weatherSnapshot ? JSON.stringify(weatherSnapshot) : null, photoPath, notes]
+    `INSERT INTO outfit_wears (outfit_id, item_ids, worn_on, weather_snapshot, photo_path, notes)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [outfitId, itemIds, wornOn, weatherSnapshot ? JSON.stringify(weatherSnapshot) : null, photoPath, notes]
   );
 
   // Bump wear counters
   await query(
     `UPDATE items SET times_worn = times_worn + 1, last_worn_at = now()
-     WHERE id = ANY($1::uuid[]) AND user_id = $2`,
-    [itemIds, session.userId]
+     WHERE id = ANY($1::uuid[])`,
+    [itemIds]
   );
 
   return NextResponse.json({ id: row!.id, photo_path: photoPath });

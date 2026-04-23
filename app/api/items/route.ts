@@ -7,9 +7,8 @@ import { processJpeg, processPng } from '@/lib/image';
 
 // ---- GET /api/items -------------------------------------------------
 export async function GET(req: NextRequest) {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
@@ -19,8 +18,8 @@ export async function GET(req: NextRequest) {
   const favorite = searchParams.get('favorite');
   const search = searchParams.get('q');
 
-  const where: string[] = ['user_id = $1'];
-  const values: any[] = [session.userId];
+  const where: string[] = [];
+  const values: any[] = [];
   if (category) {
     values.push(category);
     where.push(`category = $${values.length}`);
@@ -35,12 +34,14 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
   const items = await query(
     `SELECT id, category, sub_category, image_nobg_path, image_path, thumb_path, name, brand,
             colors, style_tags, season_tags, warmth_score, formality_score, favorite,
             times_worn, last_worn_at, created_at
      FROM items
-     WHERE ${where.join(' AND ')}
+     ${whereClause}
      ORDER BY favorite DESC, created_at DESC`,
     values
   );
@@ -48,10 +49,6 @@ export async function GET(req: NextRequest) {
 }
 
 // ---- POST /api/items ------------------------------------------------
-// Expects multipart form-data:
-//   "original": File (the raw photo)
-//   "nobg": File (the background-removed PNG, optional but preferred)
-//   "meta": JSON string of the metadata below
 const metaSchema = z.object({
   category: z.enum(['shirt', 'pants', 'shoes', 'purse', 'dress', 'outerwear', 'accessory']),
   sub_category: z.string().optional().nullable(),
@@ -71,9 +68,8 @@ const metaSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
@@ -94,26 +90,21 @@ export async function POST(req: NextRequest) {
   }
 
   const originalBuf = Buffer.from(await original.arrayBuffer());
-  // Normalize original to JPEG, max 2000px on long edge
   const normalized = await processJpeg(originalBuf, { maxW: 2000, maxH: 2000, quality: 88 });
-  const originalPath = await saveBuffer('items', session.userId, normalized.buffer, 'jpg');
+  const originalPath = await saveBuffer('items', normalized.buffer, 'jpg');
 
-  // Occupies slots: dresses take both shirt+pants
   const occupiesSlots: string[] =
     meta.category === 'dress' ? ['shirt', 'pants'] : [];
 
-  // Background-removed PNG (preserve transparency)
   let nobgPath: string | null = null;
   let thumbPath: string | null = null;
   const sourceForThumb = nobg ? Buffer.from(await nobg.arrayBuffer()) : normalized.buffer;
 
   if (nobg) {
     const processedNobg = await processPng(sourceForThumb, { maxW: 1600, maxH: 1600 });
-    nobgPath = await saveBuffer('items-nobg', session.userId, processedNobg.buffer, 'png');
+    nobgPath = await saveBuffer('items-nobg', processedNobg.buffer, 'png');
   }
 
-  // Square thumbnail for grid view (from nobg if present, else original).
-  // Flatten any transparency onto the ivory background.
   const thumb = await processJpeg(sourceForThumb, {
     maxW: 480,
     maxH: 480,
@@ -121,20 +112,19 @@ export async function POST(req: NextRequest) {
     flattenBg: { r: 253, g: 251, b: 247 },
     square: true,
   });
-  thumbPath = await saveBuffer('thumbs', session.userId, thumb.buffer, 'jpg');
+  thumbPath = await saveBuffer('thumbs', thumb.buffer, 'jpg');
 
   const row = await queryOne<{ id: string }>(
     `INSERT INTO items (
-       user_id, category, sub_category, occupies_slots,
+       category, sub_category, occupies_slots,
        image_path, image_nobg_path, thumb_path,
        name, brand, material, pattern, colors,
        style_tags, season_tags, warmth_score, formality_score,
        favorite, notes, acquired_from, purchase_price
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
      ) RETURNING id`,
     [
-      session.userId,
       meta.category,
       meta.sub_category ?? null,
       occupiesSlots,

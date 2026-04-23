@@ -29,18 +29,25 @@ export default function OutfitsPage() {
 
   async function addPhoto(wearId: string, file: File) {
     setUploadingFor(wearId);
-    const form = new FormData();
-    form.append('photo', file);
-    await fetch(`/api/wears/${wearId}/photo`, { method: 'POST', body: form });
-    setUploadingFor(null);
-    load();
+    try {
+      const { normalizeToJpeg } = await import('@/lib/normalize-image');
+      const normalized = await normalizeToJpeg(file);
+      const form = new FormData();
+      form.append('photo', normalized);
+      await fetch(`/api/wears/${wearId}/photo`, { method: 'POST', body: form });
+    } catch (e) {
+      console.error('photo upload failed', e);
+    } finally {
+      setUploadingFor(null);
+      load();
+    }
   }
 
   return (
     <div className="px-6 py-8 max-w-5xl mx-auto">
       <div className="mb-8">
         <div className="eyebrow mb-1">Outfits worn</div>
-        <h1 className="font-display text-4xl leading-tight">History</h1>
+        <h1 className="wordmark italic text-5xl leading-none text-ink-900">History</h1>
       </div>
 
       {loading ? (
@@ -76,7 +83,7 @@ export default function OutfitsPage() {
                 <label className="mb-3 inline-flex items-center gap-2 btn-ghost cursor-pointer">
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/*,.heic,.heif,.avif,.tiff,.tif"
                     capture="environment"
                     className="hidden"
                     onChange={(e) => {

@@ -3,9 +3,8 @@ import { requireSession } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 
 export async function GET() {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
@@ -14,16 +13,16 @@ export async function GET() {
   const totals = await queryOne<{ total: string; favorites: string }>(
     `SELECT count(*)::text AS total,
             count(*) FILTER (WHERE favorite = TRUE)::text AS favorites
-     FROM items WHERE user_id = $1`,
-    [session.userId]
+     FROM items`,
+    []
   );
 
   const categoryCounts = await query<{ category: string; count: string }>(
     `SELECT category, count(*)::text
-     FROM items WHERE user_id = $1
+     FROM items
      GROUP BY category
      ORDER BY count(*) DESC`,
-    [session.userId]
+    []
   );
 
   // ---- Wear stats -------------------------------------------------
@@ -38,45 +37,43 @@ export async function GET() {
        count(*) FILTER (WHERE times_worn > 0)::text AS worn_items,
        count(*) FILTER (WHERE times_worn = 0)::text AS unworn_items,
        avg(times_worn)::text AS avg_wears
-     FROM items WHERE user_id = $1`,
-    [session.userId]
+     FROM items`,
+    []
   );
 
   const mostWorn = await query(
     `SELECT id, name, brand, sub_category, category, thumb_path, image_nobg_path,
             times_worn, last_worn_at
-     FROM items WHERE user_id = $1 AND times_worn > 0
+     FROM items WHERE times_worn > 0
      ORDER BY times_worn DESC
      LIMIT 6`,
-    [session.userId]
+    []
   );
 
   const neverWorn = await query(
     `SELECT id, name, brand, sub_category, category, thumb_path, image_nobg_path,
             created_at
-     FROM items WHERE user_id = $1 AND times_worn = 0
+     FROM items WHERE times_worn = 0
      ORDER BY created_at ASC
      LIMIT 12`,
-    [session.userId]
+    []
   );
 
   const dormant = await query(
     `SELECT id, name, brand, sub_category, category, thumb_path, image_nobg_path,
             last_worn_at
      FROM items
-     WHERE user_id = $1
-       AND last_worn_at IS NOT NULL
+     WHERE last_worn_at IS NOT NULL
        AND last_worn_at < now() - interval '90 days'
      ORDER BY last_worn_at ASC
      LIMIT 12`,
-    [session.userId]
+    []
   );
 
   // ---- Color distribution -----------------------------------------
-  // Primary color (first in array) per item, bucketed by rough hue family.
   const colorRows = await query<{ colors: string[] }>(
-    `SELECT colors FROM items WHERE user_id = $1 AND array_length(colors, 1) > 0`,
-    [session.userId]
+    `SELECT colors FROM items WHERE array_length(colors, 1) > 0`,
+    []
   );
   const colorBuckets = bucketColors(colorRows.map((r) => r.colors[0]).filter(Boolean));
 
@@ -84,49 +81,47 @@ export async function GET() {
   const brands = await query<{ brand: string; count: string }>(
     `SELECT brand, count(*)::text
      FROM items
-     WHERE user_id = $1 AND brand IS NOT NULL AND brand <> ''
+     WHERE brand IS NOT NULL AND brand <> ''
      GROUP BY brand
      ORDER BY count(*) DESC
      LIMIT 10`,
-    [session.userId]
+    []
   );
 
   // ---- Acquisition mix --------------------------------------------
   const acquired = await query<{ acquired_from: string; count: string }>(
     `SELECT coalesce(acquired_from, 'unknown') AS acquired_from, count(*)::text
      FROM items
-     WHERE user_id = $1
      GROUP BY coalesce(acquired_from, 'unknown')
      ORDER BY count(*) DESC`,
-    [session.userId]
+    []
   );
 
   // ---- Formality / warmth histograms ------------------------------
   const formality = await query<{ score: number; count: string }>(
     `SELECT formality_score AS score, count(*)::text
      FROM items
-     WHERE user_id = $1 AND formality_score IS NOT NULL
+     WHERE formality_score IS NOT NULL
      GROUP BY formality_score
      ORDER BY formality_score`,
-    [session.userId]
+    []
   );
   const warmth = await query<{ score: number; count: string }>(
     `SELECT warmth_score AS score, count(*)::text
      FROM items
-     WHERE user_id = $1 AND warmth_score IS NOT NULL
+     WHERE warmth_score IS NOT NULL
      GROUP BY warmth_score
      ORDER BY warmth_score`,
-    [session.userId]
+    []
   );
 
-  // ---- Wear streak (consecutive days with at least one wear log) --
+  // ---- Wear streak -----------------------------------------------
   const recentWornDays = await query<{ worn_on: string }>(
     `SELECT DISTINCT worn_on::text
      FROM outfit_wears
-     WHERE user_id = $1
      ORDER BY worn_on DESC
      LIMIT 60`,
-    [session.userId]
+    []
   );
   const streak = calcStreak(recentWornDays.map((r) => r.worn_on));
 
@@ -160,13 +155,9 @@ export async function GET() {
   });
 }
 
-// ---- helpers -----------------------------------------------------
+// ---- helpers ---- (unchanged from v1)
 
-interface ColorBucket {
-  label: string;
-  hex: string;
-  count: number;
-}
+interface ColorBucket { label: string; hex: string; count: number; }
 
 function bucketColors(hexes: string[]): ColorBucket[] {
   const buckets: Record<string, ColorBucket> = {
@@ -185,12 +176,10 @@ function bucketColors(hexes: string[]): ColorBucket[] {
     blue:    { label: 'blue',    hex: '#4a6a8a', count: 0 },
     purple:  { label: 'purple',  hex: '#7a5a8a', count: 0 },
   };
-
   for (const hex of hexes) {
     const k = classifyColor(hex);
     if (buckets[k]) buckets[k].count++;
   }
-
   return Object.values(buckets).filter((b) => b.count > 0).sort((a, b) => b.count - a.count);
 }
 
@@ -199,16 +188,12 @@ function classifyColor(hex: string): string {
   if (!rgb) return 'gray';
   const { r, g, b } = rgb;
   const { h, s, l } = rgbToHsl(r, g, b);
-
   if (l < 0.12) return 'black';
   if (l > 0.88 && s < 0.15) return 'white';
   if (s < 0.12) return 'gray';
   if (s < 0.25 && l > 0.75) return 'cream';
-
-  // Warm neutrals
   if (h >= 15 && h < 45 && s < 0.45 && l < 0.55) return 'brown';
   if (h >= 20 && h < 50 && s < 0.5 && l >= 0.55) return 'tan';
-
   if (h < 15 || h >= 345) return s > 0.4 && l < 0.65 ? 'red' : 'pink';
   if (h < 40) return 'orange';
   if (h < 65) return 'yellow';
@@ -222,11 +207,7 @@ function classifyColor(hex: string): string {
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   if (!m) return null;
-  return {
-    r: parseInt(m[1], 16),
-    g: parseInt(m[2], 16),
-    b: parseInt(m[3], 16),
-  };
+  return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
 }
 
 function rgbToHsl(r: number, g: number, b: number) {
@@ -253,7 +234,6 @@ function calcStreak(dates: string[]): number {
   let streak = 0;
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  // Allow today to be missing (we check starting from yesterday if today hasn't been logged)
   if (!set.has(d.toISOString().slice(0, 10))) {
     d.setDate(d.getDate() - 1);
   }

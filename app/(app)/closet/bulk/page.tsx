@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { X, Check, AlertCircle, Upload } from 'lucide-react';
 
 type Category = 'shirt' | 'pants' | 'shoes' | 'purse' | 'dress' | 'outerwear' | 'accessory';
-type Status = 'queued' | 'removing-bg' | 'tagging' | 'ready' | 'saving' | 'saved' | 'error';
+type Status = 'queued' | 'normalizing' | 'removing-bg' | 'tagging' | 'ready' | 'saving' | 'saved' | 'error';
 
 const CATEGORIES: Category[] = ['shirt', 'pants', 'shoes', 'purse', 'dress', 'outerwear', 'accessory'];
 const CONCURRENCY = 3;
@@ -91,7 +91,10 @@ export default function BulkUploadPage() {
   }
 
   async function runPipeline(list: BulkItem[]) {
-    const { removeBackgroundClean } = await import('@/lib/bg-removal');
+    const [{ removeBackgroundClean }, { normalizeToJpeg }] = await Promise.all([
+      import('@/lib/bg-removal'),
+      import('@/lib/normalize-image'),
+    ]);
 
     let idx = 0;
     const processOne = async () => {
@@ -99,10 +102,27 @@ export default function BulkUploadPage() {
         const myIdx = idx++;
         const current = list[myIdx];
         try {
+          // Step 0: normalize to JPEG. Strips HEIC/AVIF/TIFF down to a
+          // universally-supported format for both our server and the AI call.
+          updateItem(current.id, { status: 'normalizing' });
+          let normalized: File;
+          try {
+            normalized = await normalizeToJpeg(current.file);
+          } catch (e) {
+            throw new Error('unsupported image format');
+          }
+          // Swap the stored file reference so later steps (save) use the
+          // normalized JPEG rather than the original HEIC/etc.
+          updateItem(current.id, {
+            file: normalized,
+            originalBlob: normalized,
+            previewUrl: URL.createObjectURL(normalized),
+          });
+
           updateItem(current.id, { status: 'removing-bg' });
           let nobgBlob: Blob | null = null;
           try {
-            nobgBlob = await removeBackgroundClean(current.file);
+            nobgBlob = await removeBackgroundClean(normalized);
           } catch (e) {
             console.warn('bg removal failed for', current.id, e);
           }
@@ -110,7 +130,7 @@ export default function BulkUploadPage() {
           updateItem(current.id, { nobgBlob, nobgUrl, status: 'tagging' });
 
           const form = new FormData();
-          form.append('image', current.file);
+          form.append('image', normalized);
           const res = await fetch('/api/ai/tag-item', { method: 'POST', body: form });
           if (!res.ok) throw new Error('tagging failed');
           const json = await res.json();
@@ -197,7 +217,11 @@ export default function BulkUploadPage() {
   }
 
   const processingCount = items.filter(
-    (it) => it.status === 'removing-bg' || it.status === 'tagging' || it.status === 'queued'
+    (it) =>
+      it.status === 'queued' ||
+      it.status === 'normalizing' ||
+      it.status === 'removing-bg' ||
+      it.status === 'tagging'
   ).length;
   const readyCount = items.filter((it) => it.status === 'ready').length;
   const errorCount = items.filter((it) => it.status === 'error').length;
@@ -206,7 +230,7 @@ export default function BulkUploadPage() {
     <div className="px-6 py-8 max-w-5xl mx-auto pb-32">
       <div className="mb-8">
         <div className="eyebrow mb-1">Bulk add</div>
-        <h1 className="font-display text-4xl leading-tight">Dump the closet</h1>
+        <h1 className="wordmark italic text-5xl leading-none text-ink-900">Dump the closet</h1>
         <p className="mt-2 text-sm text-ink-600">
           Select many photos at once. Backgrounds get removed in your browser, then AI tags everything. Review and save.
         </p>
@@ -225,7 +249,7 @@ export default function BulkUploadPage() {
           <input
             ref={fileRef}
             type="file"
-            accept="image/*"
+            accept="image/*,.heic,.heif,.avif,.tiff,.tif"
             multiple
             onChange={onFileChange}
             className="hidden"
@@ -338,9 +362,10 @@ function ItemRow({
       <div className="w-24 h-24 flex-shrink-0 bg-ivory-100 relative overflow-hidden">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={previewSrc} alt="" className="w-full h-full object-contain" />
-        {(item.status === 'removing-bg' ||
+        {(item.status === 'queued' ||
+          item.status === 'normalizing' ||
+          item.status === 'removing-bg' ||
           item.status === 'tagging' ||
-          item.status === 'queued' ||
           item.status === 'saving') && (
           <div className="absolute inset-0 bg-ivory-50/70 flex items-center justify-center">
             <div className="w-3 h-3 rounded-full bg-ink-900 animate-pulse" />
@@ -440,6 +465,7 @@ function ItemRow({
 function StatusLine({ item }: { item: BulkItem }) {
   const label = {
     queued: 'Queued',
+    normalizing: 'Reading photo…',
     'removing-bg': 'Removing background…',
     tagging: 'Tagging with AI…',
     ready: 'Ready',
@@ -450,6 +476,7 @@ function StatusLine({ item }: { item: BulkItem }) {
 
   const color = {
     queued: 'text-ink-400',
+    normalizing: 'text-ink-400',
     'removing-bg': 'text-ink-400',
     tagging: 'text-ink-400',
     ready: 'text-sage-700',

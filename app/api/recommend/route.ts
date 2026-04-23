@@ -6,9 +6,8 @@ import { generateCandidates, filterForContext, currentSeason, type Item } from '
 import { rankOutfits } from '@/lib/anthropic';
 
 export async function GET(req: NextRequest) {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
@@ -25,9 +24,8 @@ export async function GET(req: NextRequest) {
   const items = await query<Item>(
     `SELECT id, category, sub_category, occupies_slots, colors, style_tags, season_tags,
             warmth_score, formality_score, brand, name
-     FROM items
-     WHERE user_id = $1`,
-    [session.userId]
+     FROM items`,
+    []
   );
 
   const filtered = filterForContext(items, {

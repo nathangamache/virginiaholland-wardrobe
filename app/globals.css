@@ -4,14 +4,18 @@
 
 @layer base {
   :root {
-    --bg: #fdfbf7;
+    --bg: #fef5f5;
     --bg-elevated: #ffffff;
-    --border: #e8dcc2;
-    --border-soft: #f2ead9;
-    --ink: #1a1712;
-    --ink-soft: #4a4339;
-    --ink-muted: #8a8275;
-    --accent: #7a4f3a;
+    --border: #fbd0d8;
+    --border-soft: #fde4e8;
+    --ink: #2a1a22;
+    --ink-soft: #3a1e2a;
+    --ink-muted: #8a6e7a;
+    --accent: #ec2878;
+    --accent-deep: #b01456;
+    --cream: #faf0e8;
+    --cheetah-tan: #d4a574;
+    --cheetah-spot: #3a2416;
   }
 
   html {
@@ -24,8 +28,13 @@
     background: var(--bg);
     color: var(--ink);
     font-family: var(--font-sans);
-    font-feature-settings: 'ss01', 'cv11';
+    font-feature-settings: 'ss01';
     min-height: 100vh;
+    /* Subtle pink gradient wash so the background has warmth */
+    background-image:
+      radial-gradient(ellipse 60% 80% at 15% -10%, #fde4e8 0%, transparent 60%),
+      radial-gradient(ellipse 50% 60% at 90% 110%, #fbd0d8 0%, transparent 60%);
+    background-attachment: fixed;
   }
 
   h1, h2, h3, h4 {
@@ -34,50 +43,130 @@
     letter-spacing: -0.02em;
   }
 
+  /* Italic variant for display headings — Parisian editorial feel */
+  .font-display { font-feature-settings: 'liga', 'dlig'; }
+
   ::selection {
     background: var(--accent);
-    color: var(--bg);
+    color: #fff;
   }
 
-  /* Subtle paper grain overlay */
+  /* Paper grain overlay, warmer than before */
   body::before {
     content: '';
     position: fixed;
     inset: 0;
     pointer-events: none;
     z-index: 1000;
-    opacity: 0.035;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='3'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.7 0'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>");
+    opacity: 0.03;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='3'/><feColorMatrix values='0 0 0 0 0.2 0 0 0 0 0.1 0 0 0 0 0.15 0 0 0 0.7 0'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>");
   }
 }
 
 @layer components {
+  /* Primary action — hot pink. The signature button. */
   .btn {
-    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium transition-all duration-200;
-    @apply border border-ink-800 bg-ink-900 text-ivory-50;
-    @apply hover:bg-ink-800 active:translate-y-px;
-    border-radius: 2px;
+    @apply inline-flex items-center justify-center gap-2 px-6 py-2.5 text-sm font-medium transition-all duration-200;
+    @apply bg-pink-500 text-white border border-pink-500;
+    @apply hover:bg-pink-700 hover:border-pink-700 active:translate-y-px;
+    border-radius: 9999px; /* Pill, very Parisian */
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-size: 11px;
+    box-shadow: 0 1px 2px rgba(236, 40, 120, 0.15);
   }
+
+  /* Secondary action — outline pink */
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium transition-all;
-    @apply border border-ink-200 bg-transparent text-ink-800 hover:bg-ivory-100;
-    border-radius: 2px;
+    @apply inline-flex items-center justify-center gap-2 px-6 py-2.5 text-sm font-medium transition-all;
+    @apply border border-pink-300 bg-transparent text-pink-700 hover:bg-pink-100 hover:border-pink-500;
+    border-radius: 9999px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-size: 11px;
   }
+
   .btn-link {
-    @apply inline-flex items-center gap-1 text-sm text-ink-600 hover:text-ink-900 transition-colors underline-offset-4 hover:underline;
+    @apply inline-flex items-center gap-1 text-sm text-pink-700 hover:text-pink-500 transition-colors underline-offset-4 hover:underline;
   }
+
+  /* Inputs — delicate underline, pink focus */
   .input {
-    @apply w-full bg-transparent border-b border-ink-200 px-0 py-2.5 text-base text-ink-900;
-    @apply placeholder:text-ink-400 focus:outline-none focus:border-ink-900 transition-colors;
+    @apply w-full bg-transparent border-b border-pink-200 px-0 py-2.5 text-base text-ink-900;
+    @apply placeholder:text-ink-400 focus:outline-none focus:border-pink-500 transition-colors;
   }
+
+  /* Cards — soft pink tint, subtle shadow */
   .card {
-    @apply bg-white border border-ivory-200;
-    border-radius: 2px;
+    @apply bg-white border border-pink-100;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(90, 10, 44, 0.04), 0 2px 6px rgba(90, 10, 44, 0.02);
   }
+
+  /* Cards with a pink tint instead of pure white */
+  .card-pink {
+    @apply border border-pink-200;
+    background: linear-gradient(180deg, #fef5f5 0%, #fde4e8 100%);
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(176, 20, 86, 0.08);
+  }
+
   .label {
     @apply text-[11px] uppercase tracking-[0.18em] text-ink-400 font-medium;
   }
+
   .eyebrow {
-    @apply text-[10px] uppercase tracking-[0.3em] text-ink-400 font-medium;
+    @apply text-[10px] uppercase tracking-[0.3em] text-pink-700 font-medium;
   }
+
+  /* Cheetah accent strip — used sparingly as dividers */
+  .cheetah-strip {
+    height: 6px;
+    background-image: var(--cheetah);
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80' viewBox='0 0 80 80'><g fill='%233a2416' fill-opacity='0.85'><ellipse cx='14' cy='12' rx='4' ry='3.2' transform='rotate(-15 14 12)'/><ellipse cx='42' cy='8' rx='3' ry='4'/><ellipse cx='64' cy='18' rx='4.5' ry='3' transform='rotate(25 64 18)'/><ellipse cx='10' cy='38' rx='3.5' ry='4.5' transform='rotate(-10 10 38)'/><ellipse cx='34' cy='42' rx='5' ry='3.5' transform='rotate(20 34 42)'/><ellipse cx='58' cy='48' rx='3' ry='4' transform='rotate(-20 58 48)'/><ellipse cx='18' cy='64' rx='4' ry='3' transform='rotate(15 18 64)'/><ellipse cx='48' cy='70' rx='3.5' ry='4' transform='rotate(-25 48 70)'/><ellipse cx='72' cy='60' rx='4' ry='3.5' transform='rotate(10 72 60)'/></g><g fill='%23d4a574' fill-opacity='0.5'><ellipse cx='14' cy='12' rx='6' ry='5' transform='rotate(-15 14 12)'/><ellipse cx='42' cy='8' rx='5' ry='6'/><ellipse cx='64' cy='18' rx='6.5' ry='5' transform='rotate(25 64 18)'/><ellipse cx='10' cy='38' rx='5.5' ry='6.5' transform='rotate(-10 10 38)'/><ellipse cx='34' cy='42' rx='7' ry='5.5' transform='rotate(20 34 42)'/><ellipse cx='58' cy='48' rx='5' ry='6' transform='rotate(-20 58 48)'/><ellipse cx='18' cy='64' rx='6' ry='5' transform='rotate(15 18 64)'/><ellipse cx='48' cy='70' rx='5.5' ry='6' transform='rotate(-25 48 70)'/><ellipse cx='72' cy='60' rx='6' ry='5.5' transform='rotate(10 72 60)'/></g></svg>");
+    background-size: 40px 40px;
+    background-repeat: repeat-x;
+    background-position: center;
+  }
+
+  /* Decorative Paris ornament — floret character */
+  .ornament::before {
+    content: '❦';
+    display: inline-block;
+    margin: 0 0.5em;
+    color: var(--accent);
+    font-size: 0.8em;
+    vertical-align: middle;
+  }
+
+  /* Brand wordmark flourish */
+  .wordmark {
+    font-family: var(--font-display);
+    font-style: italic;
+    letter-spacing: -0.03em;
+  }
+
+  /* === LEGACY CLASS ALIASES ===
+     The old theme used ivory-*, sage-*, clay-* utility classes in many files.
+     Map those to the new pink palette so we don't have to touch every page. */
+  .bg-ivory-50 { background-color: #fef5f5; }
+  .bg-ivory-100 { background-color: #fde4e8; }
+  .bg-ivory-200 { background-color: #fbd0d8; }
+  .bg-ivory-300 { background-color: #f7a8be; }
+  .border-ivory-100 { border-color: #fde4e8; }
+  .border-ivory-200 { border-color: #fbd0d8; }
+  .border-ivory-300 { border-color: #f7a8be; }
+  .text-ivory-50 { color: #ffffff; }
+  .from-ivory-50\/95 { --tw-gradient-from: rgba(254, 245, 245, 0.95); }
+
+  .text-sage-700 { color: #b01456; } /* success = pink */
+  .text-sage-500 { color: #d41a67; }
+  .bg-sage-300 { background-color: #f7a8be; }
+  .bg-sage-300\/80 { background-color: rgba(247, 168, 190, 0.8); }
+
+  .text-clay-700 { color: #9a1040; } /* error = deeper pink-red */
+  .text-clay-300 { color: #f7a8be; }
+  .border-clay-300 { border-color: #f7a8be; }
+  .bg-clay-300\/10 { background-color: rgba(247, 168, 190, 0.1); }
+  .bg-clay-500 { background-color: #ec2878; }
 }

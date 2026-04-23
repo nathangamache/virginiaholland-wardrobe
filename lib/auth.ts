@@ -25,7 +25,6 @@ export function isAllowed(email: string): boolean {
 // ---- Codes -------------------------------------------------------------
 
 export function generateCode(): string {
-  // 6-digit numeric code, leading zeros preserved
   const n = randomBytes(4).readUInt32BE(0) % 1_000_000;
   return n.toString().padStart(6, '0');
 }
@@ -38,7 +37,7 @@ export function hashCode(code: string): string {
 
 // ---- Rate limiting -----------------------------------------------------
 
-const RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const RATE_WINDOW_MS = 60 * 60 * 1000;
 const RATE_MAX_ATTEMPTS = 5;
 
 export async function checkAndIncrementRateLimit(email: string): Promise<boolean> {
@@ -55,15 +54,19 @@ export async function checkAndIncrementRateLimit(email: string): Promise<boolean
 }
 
 // ---- Session (JWT in cookie) ------------------------------------------
+//
+// The session is just a boolean "is this browser authenticated" signal.
+// We stash the email for display purposes but nothing in the data model
+// references it — there is only one closet, shared by everyone on the
+// allowlist.
 
 export interface Session {
-  userId: string;
   email: string;
 }
 
-export async function createSession(userId: string, email: string): Promise<void> {
+export async function createSession(email: string): Promise<void> {
   const expSeconds = Math.floor(Date.now() / 1000) + SESSION_DAYS * 24 * 60 * 60;
-  const token = await new SignJWT({ sub: userId, email })
+  const token = await new SignJWT({ email })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime(expSeconds)
@@ -90,8 +93,8 @@ export async function getSession(): Promise<Session | null> {
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, secret());
-    if (!payload.sub || !payload.email) return null;
-    return { userId: payload.sub as string, email: payload.email as string };
+    if (!payload.email) return null;
+    return { email: payload.email as string };
   } catch {
     return null;
   }
@@ -103,17 +106,7 @@ export async function requireSession(): Promise<Session> {
   return s;
 }
 
-// ---- User helpers ------------------------------------------------------
-
-export async function upsertUser(email: string): Promise<{ id: string; email: string }> {
-  const normalized = email.trim().toLowerCase();
-  const row = await queryOne<{ id: string; email: string }>(
-    `INSERT INTO users (email, last_login_at)
-     VALUES ($1, now())
-     ON CONFLICT (email) DO UPDATE SET last_login_at = now()
-     RETURNING id, email`,
-    [normalized]
-  );
-  if (!row) throw new Error('Failed to upsert user');
-  return row;
+// Kept for legacy imports, but does nothing in single-closet mode
+export async function recordLogin(_email: string): Promise<void> {
+  // no-op; we don't maintain user records anymore
 }

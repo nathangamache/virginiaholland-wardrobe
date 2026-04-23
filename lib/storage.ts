@@ -3,16 +3,16 @@ import fs from 'fs/promises';
 import { createHash, randomBytes } from 'crypto';
 
 /**
- * Storage layout (relative to APP_ROOT):
- *   storage/images/items/<userId>/<id>.png      -- original upload
- *   storage/images/items-nobg/<userId>/<id>.png -- background removed (PNG with transparency)
- *   storage/images/thumbs/<userId>/<id>.jpg     -- small JPEG preview
- *   storage/images/wears/<userId>/<id>.jpg
- *   storage/images/wishlist/<userId>/<id>.jpg
+ * Storage layout (relative to $APP_ROOT/storage/images/):
  *
- * We store RELATIVE paths in the database (e.g. "items/<userId>/<id>.png") and
- * serve them through an authenticated /api/images/[...path] route so nothing
- * is publicly accessible even if someone guesses a URL.
+ *   items/<id>.jpg         -- original upload (normalized)
+ *   items-nobg/<id>.png    -- background-removed PNG
+ *   thumbs/<id>.jpg        -- square JPEG preview
+ *   wears/<id>.jpg         -- outfit wear photos
+ *   wishlist/<id>.jpg      -- wishlist images (optional)
+ *
+ * Files are served through /api/images/[...path] which gates on session only
+ * (no per-user scoping — it's a single closet).
  */
 
 function appRoot(): string {
@@ -26,7 +26,6 @@ export function storageRoot(): string {
 }
 
 export function absoluteFromRelative(relativePath: string): string {
-  // Prevent path traversal attempts
   const normalized = path.posix.normalize(relativePath).replace(/^(\.\.[/\\])+/, '');
   if (normalized.includes('..')) {
     throw new Error('Invalid path');
@@ -46,22 +45,15 @@ type Kind = 'items' | 'items-nobg' | 'thumbs' | 'wears' | 'wishlist';
 
 export async function saveBuffer(
   kind: Kind,
-  userId: string,
   buffer: Buffer,
   ext: 'png' | 'jpg' | 'webp'
 ): Promise<string> {
   const id = newId();
-  const relative = path.posix.join(kind, userId, `${id}.${ext}`);
+  const relative = path.posix.join(kind, `${id}.${ext}`);
   const absolute = absoluteFromRelative(relative);
   await ensureDir(path.dirname(absolute));
   await fs.writeFile(absolute, buffer);
   return relative;
-}
-
-export async function saveBufferAtPath(relativePath: string, buffer: Buffer): Promise<void> {
-  const absolute = absoluteFromRelative(relativePath);
-  await ensureDir(path.dirname(absolute));
-  await fs.writeFile(absolute, buffer);
 }
 
 export async function readBuffer(relativePath: string): Promise<Buffer> {

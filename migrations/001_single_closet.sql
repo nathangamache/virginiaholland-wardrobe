@@ -1,23 +1,30 @@
--- Wardrobe initial schema
--- Run: psql $DATABASE_URL -f migrations/001_initial.sql
+-- Wardrobe single-closet schema (v2)
+-- Replaces migrations/001_initial.sql. The app is single-closet; there is no
+-- user concept in the data model. Authentication is a whitelist-based login
+-- gate only (see auth_codes, auth_rate_limits below).
+--
+-- To apply: since we're pre-production with no real data, this file drops
+-- all tables from the previous schema and recreates them.
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- =============================================================
--- Users
+-- Clean slate: drop old per-user tables
 -- =============================================================
-CREATE TABLE IF NOT EXISTS users (
-  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  email         TEXT NOT NULL UNIQUE,
-  display_name  TEXT,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  last_login_at TIMESTAMPTZ
-);
+DROP TABLE IF EXISTS outfit_wears CASCADE;
+DROP TABLE IF EXISTS outfits CASCADE;
+DROP TABLE IF EXISTS wishlist CASCADE;
+DROP TABLE IF EXISTS trips CASCADE;
+DROP TABLE IF EXISTS items CASCADE;
+DROP TABLE IF EXISTS auth_codes CASCADE;
+DROP TABLE IF EXISTS auth_rate_limits CASCADE;
+DROP TABLE IF EXISTS weather_cache CASCADE;
+DROP TABLE IF EXISTS users CASCADE;   -- no longer used
 
 -- =============================================================
--- Auth codes (2FA)
+-- Auth codes (login gate only, no user record)
 -- =============================================================
-CREATE TABLE IF NOT EXISTS auth_codes (
+CREATE TABLE auth_codes (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email       TEXT NOT NULL,
   code_hash   TEXT NOT NULL,
@@ -26,151 +33,133 @@ CREATE TABLE IF NOT EXISTS auth_codes (
   ip          TEXT,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_auth_codes_email ON auth_codes(email);
-CREATE INDEX IF NOT EXISTS idx_auth_codes_expires ON auth_codes(expires_at);
+CREATE INDEX idx_auth_codes_email ON auth_codes(email);
+CREATE INDEX idx_auth_codes_expires ON auth_codes(expires_at);
 
--- Rate limiting table for code requests
-CREATE TABLE IF NOT EXISTS auth_rate_limits (
-  email       TEXT NOT NULL,
-  window_start TIMESTAMPTZ NOT NULL,
-  attempts    INT NOT NULL DEFAULT 1,
+CREATE TABLE auth_rate_limits (
+  email         TEXT NOT NULL,
+  window_start  TIMESTAMPTZ NOT NULL,
+  attempts      INT NOT NULL DEFAULT 1,
   PRIMARY KEY (email, window_start)
 );
 
 -- =============================================================
 -- Wardrobe items
 -- =============================================================
-CREATE TABLE IF NOT EXISTS items (
+CREATE TABLE items (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 
-  -- Classification
   category          TEXT NOT NULL CHECK (category IN (
                       'shirt', 'pants', 'shoes', 'purse',
                       'dress', 'outerwear', 'accessory'
                     )),
-  sub_category      TEXT,                          -- e.g. 'blouse', 'jeans', 'heels', 'tote'
-  occupies_slots    TEXT[] NOT NULL DEFAULT '{}',  -- dresses = ['shirt','pants']
+  sub_category      TEXT,
+  occupies_slots    TEXT[] NOT NULL DEFAULT '{}',
 
-  -- Images
-  image_path        TEXT NOT NULL,                 -- original
-  image_nobg_path   TEXT,                          -- background removed
-  thumb_path        TEXT,                          -- small preview
+  image_path        TEXT NOT NULL,
+  image_nobg_path   TEXT,
+  thumb_path        TEXT,
 
-  -- Descriptive metadata
-  name              TEXT,                          -- free-form, optional
+  name              TEXT,
   brand             TEXT,
-  colors            TEXT[] NOT NULL DEFAULT '{}',  -- hex codes, primary first
+  colors            TEXT[] NOT NULL DEFAULT '{}',
   material          TEXT,
-  pattern           TEXT,                          -- 'solid', 'striped', etc.
+  pattern           TEXT,
 
-  -- Tags (arrays for flexibility)
-  style_tags        TEXT[] NOT NULL DEFAULT '{}',  -- 'casual', 'formal', 'preppy', etc.
-  season_tags       TEXT[] NOT NULL DEFAULT '{}',  -- 'spring', 'summer', 'fall', 'winter'
+  style_tags        TEXT[] NOT NULL DEFAULT '{}',
+  season_tags       TEXT[] NOT NULL DEFAULT '{}',
 
-  -- Scores (1-5)
   warmth_score      INT CHECK (warmth_score BETWEEN 1 AND 5),
   formality_score   INT CHECK (formality_score BETWEEN 1 AND 5),
 
-  -- Status
   favorite          BOOLEAN NOT NULL DEFAULT FALSE,
   notes             TEXT,
 
-  -- Wear tracking
   last_worn_at      TIMESTAMPTZ,
   times_worn        INT NOT NULL DEFAULT 0,
 
-  -- Provenance
-  acquired_from     TEXT,   -- 'thrifted', 'retail', 'gift', 'vintage', etc.
+  acquired_from     TEXT,
   purchase_price    NUMERIC(10,2),
 
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_items_user ON items(user_id);
-CREATE INDEX IF NOT EXISTS idx_items_user_category ON items(user_id, category);
-CREATE INDEX IF NOT EXISTS idx_items_user_favorite ON items(user_id) WHERE favorite = TRUE;
-CREATE INDEX IF NOT EXISTS idx_items_last_worn ON items(user_id, last_worn_at);
+CREATE INDEX idx_items_category ON items(category);
+CREATE INDEX idx_items_favorite ON items(favorite) WHERE favorite = TRUE;
+CREATE INDEX idx_items_last_worn ON items(last_worn_at);
 
 -- =============================================================
--- Outfits (named / saved combinations)
+-- Outfits
 -- =============================================================
-CREATE TABLE IF NOT EXISTS outfits (
+CREATE TABLE outfits (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name          TEXT,
-  occasion      TEXT,                           -- free-form user label
+  occasion      TEXT,
   item_ids      UUID[] NOT NULL DEFAULT '{}',
-  ai_reasoning  TEXT,                           -- reason given by AI if AI-suggested
-  source        TEXT NOT NULL DEFAULT 'manual', -- 'manual' | 'ai' | 'packing'
+  ai_reasoning  TEXT,
+  source        TEXT NOT NULL DEFAULT 'manual',
   saved_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_outfits_user ON outfits(user_id);
 
 -- =============================================================
--- Outfit wears (history of actually wearing an outfit)
+-- Outfit wears (history)
 -- =============================================================
-CREATE TABLE IF NOT EXISTS outfit_wears (
+CREATE TABLE outfit_wears (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   outfit_id         UUID REFERENCES outfits(id) ON DELETE SET NULL,
-  item_ids          UUID[] NOT NULL DEFAULT '{}', -- snapshot, survives outfit deletion
+  item_ids          UUID[] NOT NULL DEFAULT '{}',
   worn_on           DATE NOT NULL,
   weather_snapshot  JSONB,
-  photo_path        TEXT,                         -- mirror selfie / wear photo
+  photo_path        TEXT,
   notes             TEXT,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_wears_user_date ON outfit_wears(user_id, worn_on DESC);
+CREATE INDEX idx_wears_worn_on ON outfit_wears(worn_on DESC);
 
 -- =============================================================
 -- Wishlist
 -- =============================================================
-CREATE TABLE IF NOT EXISTS wishlist (
+CREATE TABLE wishlist (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   description       TEXT NOT NULL,
   category          TEXT,
-  reason            TEXT,                          -- AI reasoning or user note
+  reason            TEXT,
   suggested_by_ai   BOOLEAN NOT NULL DEFAULT FALSE,
   image_path        TEXT,
   link              TEXT,
   brand_suggestions TEXT[] NOT NULL DEFAULT '{}',
-  price_range       TEXT,                          -- free-form, e.g. '$100-$200'
+  price_range       TEXT,
   priority          INT NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),
   acquired_at       TIMESTAMPTZ,
   notes             TEXT,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_wishlist_user ON wishlist(user_id);
 
 -- =============================================================
 -- Trips (packing mode)
 -- =============================================================
-CREATE TABLE IF NOT EXISTS trips (
+CREATE TABLE trips (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id               UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name                  TEXT NOT NULL,
   destination           TEXT,
   destination_lat       NUMERIC,
   destination_lon       NUMERIC,
   start_date            DATE NOT NULL,
   end_date              DATE NOT NULL,
-  occasions             TEXT[] NOT NULL DEFAULT '{}', -- 'dinner', 'hiking', etc.
+  occasions             TEXT[] NOT NULL DEFAULT '{}',
   selected_item_ids     UUID[] NOT NULL DEFAULT '{}',
-  generated_outfits     JSONB,                        -- day-by-day plan
+  generated_outfits     JSONB,
   weather_forecast      JSONB,
   notes                 TEXT,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_trips_user ON trips(user_id);
 
 -- =============================================================
--- Weather cache (avoids hammering Open-Meteo)
+-- Weather cache
 -- =============================================================
-CREATE TABLE IF NOT EXISTS weather_cache (
-  cache_key     TEXT PRIMARY KEY,     -- e.g. 'lat,lon,YYYY-MM-DD'
+CREATE TABLE weather_cache (
+  cache_key     TEXT PRIMARY KEY,
   data          JSONB NOT NULL,
   fetched_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );

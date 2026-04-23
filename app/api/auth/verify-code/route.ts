@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { query, queryOne } from '@/lib/db';
-import { hashCode, createSession, upsertUser, isAllowed } from '@/lib/auth';
+import { hashCode, createSession, isAllowed } from '@/lib/auth';
 
 const schema = z.object({
   email: z.string().email(),
@@ -39,8 +39,8 @@ export async function POST(req: NextRequest) {
 
   await query(`UPDATE auth_codes SET used_at = now() WHERE id = $1`, [row.id]);
 
-  const user = await upsertUser(email);
-  await createSession(user.id, user.email);
+  // Single-closet: no user record. Session carries only the email for display.
+  await createSession(email);
 
   return NextResponse.json({ ok: true });
 }

@@ -4,15 +4,14 @@ import { requireSession } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 
 export async function GET() {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const rows = await query(
-    `SELECT * FROM wishlist WHERE user_id = $1 ORDER BY priority DESC, created_at DESC`,
-    [session.userId]
+    `SELECT * FROM wishlist ORDER BY priority DESC, created_at DESC`,
+    []
   );
   return NextResponse.json({ wishlist: rows });
 }
@@ -30,9 +29,8 @@ const createSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
@@ -43,11 +41,10 @@ export async function POST(req: NextRequest) {
   const d = parsed.data;
 
   const row = await queryOne<{ id: string }>(
-    `INSERT INTO wishlist (user_id, description, category, reason, suggested_by_ai,
+    `INSERT INTO wishlist (description, category, reason, suggested_by_ai,
        link, brand_suggestions, price_range, priority, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
     [
-      session.userId,
       d.description,
       d.category ?? null,
       d.reason ?? null,
@@ -63,15 +60,14 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const { searchParams } = req.nextUrl;
   const id = searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'missing id' }, { status: 400 });
-  await query(`DELETE FROM wishlist WHERE id = $1 AND user_id = $2`, [id, session.userId]);
+  await query(`DELETE FROM wishlist WHERE id = $1`, [id]);
   return NextResponse.json({ ok: true });
 }

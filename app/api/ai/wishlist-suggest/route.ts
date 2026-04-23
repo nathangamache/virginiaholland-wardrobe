@@ -1,34 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/auth';
-import { query, queryOne } from '@/lib/db';
+import { query } from '@/lib/db';
 import { suggestWishlist } from '@/lib/anthropic';
 
 export async function POST(_req: NextRequest) {
-  let session;
   try {
-    session = await requireSession();
+    await requireSession();
   } catch {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  // Summarize closet: counts per category + sampled items with key attributes
   const categoryCounts = await query<{ category: string; count: string }>(
-    `SELECT category, count(*)::text FROM items WHERE user_id = $1 GROUP BY category`,
-    [session.userId]
+    `SELECT category, count(*)::text FROM items GROUP BY category`,
+    []
   );
 
   const samples = await query(
     `SELECT category, sub_category, name, brand, colors, style_tags, season_tags,
             formality_score, warmth_score, acquired_from
-     FROM items WHERE user_id = $1
+     FROM items
      ORDER BY random()
      LIMIT 60`,
-    [session.userId]
+    []
   );
 
   const existingWishes = await query<{ description: string }>(
-    `SELECT description FROM wishlist WHERE user_id = $1 AND acquired_at IS NULL`,
-    [session.userId]
+    `SELECT description FROM wishlist WHERE acquired_at IS NULL`,
+    []
   );
 
   const summary = JSON.stringify(

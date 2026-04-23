@@ -58,8 +58,12 @@ export async function removeBackgroundClean(
   opts.onProgress?.('removing background', 100, 100);
 
   // Step 3: post-process alpha to trim halo pixels
-  if (opts.skipEdgeCleanup) return raw;
-  return cleanupAlphaEdges(raw);
+  const cleaned = opts.skipEdgeCleanup ? raw : await cleanupAlphaEdges(raw);
+
+  // Step 4: crop tight to the subject's actual bounding box, leaving a
+  // small margin. This removes the large transparent padding left by the
+  // model and makes the image look properly framed.
+  return cropToContent(cleaned);
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +224,70 @@ async function cleanupAlphaEdges(bgRemovedBlob: Blob): Promise<Blob> {
 
   ctx.putImageData(img, 0, 0);
   return canvas.convertToBlob({ type: 'image/png' });
+}
+
+// ---------------------------------------------------------------------------
+// Final crop: find the tight bounding box of non-transparent pixels and
+// crop to it with a small margin. This leaves the subject nicely framed
+// instead of surrounded by the model's loose padding.
+// ---------------------------------------------------------------------------
+
+async function cropToContent(bgRemovedBlob: Blob): Promise<Blob> {
+  const bitmap = await blobToBitmap(bgRemovedBlob);
+  const { width: w, height: h } = bitmap;
+
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(bitmap, 0, 0);
+  bitmap.close?.();
+  const img = ctx.getImageData(0, 0, w, h);
+  const data = img.data;
+
+  // Scan for bounding box of opaque-enough pixels.
+  // Threshold of 20 is lenient so we don't clip soft edges like hair or
+  // semi-sheer fabric; the edge cleanup pass already killed true halo pixels.
+  const ALPHA_THRESHOLD = 20;
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+
+  // Step by 2 for speed; bounding box precision of 1px is plenty.
+  const step = 2;
+  for (let y = 0; y < h; y += step) {
+    for (let x = 0; x < w; x += step) {
+      const alpha = data[(y * w + x) * 4 + 3];
+      if (alpha > ALPHA_THRESHOLD) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  // Empty image (bg removal wiped everything) — return as-is
+  if (maxX < minX || maxY < minY) {
+    return bgRemovedBlob;
+  }
+
+  // Add a small uniform margin: 3% of the larger dimension of the subject.
+  // Keeps a bit of breathing room around the piece without leaving huge empty space.
+  const subjectW = maxX - minX;
+  const subjectH = maxY - minY;
+  const margin = Math.round(Math.max(subjectW, subjectH) * 0.03);
+
+  const cropX = Math.max(0, minX - margin);
+  const cropY = Math.max(0, minY - margin);
+  const cropW = Math.min(w - cropX, subjectW + margin * 2);
+  const cropH = Math.min(h - cropY, subjectH + margin * 2);
+
+  // If the crop wouldn't meaningfully reduce the image, skip it.
+  if (cropW >= w * 0.98 && cropH >= h * 0.98) {
+    return bgRemovedBlob;
+  }
+
+  const outCanvas = new OffscreenCanvas(cropW, cropH);
+  const outCtx = outCanvas.getContext('2d')!;
+  outCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+  return outCanvas.convertToBlob({ type: 'image/png' });
 }
 
 // ---------------------------------------------------------------------------

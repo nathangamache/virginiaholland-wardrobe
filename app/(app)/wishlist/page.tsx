@@ -64,7 +64,7 @@ export default function WishlistPage() {
       <div className="flex items-baseline justify-between mb-8">
         <div>
           <div className="eyebrow mb-1">Wishlist</div>
-          <h1 className="font-display text-4xl leading-tight">Thoughtful adds</h1>
+          <h1 className="wordmark italic text-5xl leading-none text-ink-900">Thoughtful adds</h1>
         </div>
         <button onClick={() => setShowAdd(true)} className="btn-ghost">
           <Plus className="w-4 h-4" /> Add

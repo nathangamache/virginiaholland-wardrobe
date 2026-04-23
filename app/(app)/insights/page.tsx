@@ -53,7 +53,7 @@ export default function InsightsPage() {
       {/* Hero stats */}
       <section>
         <div className="eyebrow mb-1">Insights</div>
-        <h1 className="font-display text-4xl leading-tight mb-6">The closet, in numbers</h1>
+        <h1 className="wordmark italic text-5xl leading-none text-ink-900 mb-6">The closet, in numbers</h1>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-ivory-200 border border-ivory-200">
           <Stat label="Pieces" value={data.totals.total} />
           <Stat label="Favorites" value={data.totals.favorites} />

@@ -1,23 +1,25 @@
 import type { Metadata, Viewport } from 'next';
-import { Fraunces, Manrope } from 'next/font/google';
+import { Playfair_Display, Jost } from 'next/font/google';
 import './globals.css';
 
-const display = Fraunces({
+const display = Playfair_Display({
   subsets: ['latin'],
   variable: '--font-display',
   display: 'swap',
-  axes: ['opsz', 'SOFT'],
+  style: ['normal', 'italic'],
+  weight: ['400', '500', '700'],
 });
 
-const sans = Manrope({
+const sans = Jost({
   subsets: ['latin'],
   variable: '--font-sans',
   display: 'swap',
+  weight: ['300', '400', '500', '600'],
 });
 
 export const metadata: Metadata = {
   title: 'Wardrobe',
-  description: 'A curated closet.',
+  description: 'A curated closet, in pink.',
   manifest: '/manifest.webmanifest',
   icons: {
     icon: [
@@ -35,7 +37,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: '#fdfbf7',
+  themeColor: '#fef5f5',
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
