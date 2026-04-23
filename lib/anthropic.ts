@@ -1,0 +1,321 @@
+import Anthropic from '@anthropic-ai/sdk';
+
+let _client: Anthropic | null = null;
+function client(): Anthropic {
+  if (!_client) {
+    _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  }
+  return _client;
+}
+
+// Two-model setup:
+//   FAST  = image tagging on upload + wishlist gap analysis (frequent, low-stakes)
+//   SMART = outfit ranking + packing plans (aesthetic + multi-day reasoning)
+// Each task can also be overridden individually via its own env var.
+const FAST_MODEL     = process.env.ANTHROPIC_MODEL_FAST     ?? 'claude-haiku-4-5';
+const SMART_MODEL    = process.env.ANTHROPIC_MODEL_SMART    ?? 'claude-sonnet-4-6';
+
+const MODEL_TAG      = process.env.ANTHROPIC_MODEL_TAG      ?? FAST_MODEL;
+const MODEL_WISHLIST = process.env.ANTHROPIC_MODEL_WISHLIST ?? FAST_MODEL;
+const MODEL_RANK     = process.env.ANTHROPIC_MODEL_RANK     ?? SMART_MODEL;
+const MODEL_PACKING  = process.env.ANTHROPIC_MODEL_PACKING  ?? SMART_MODEL;
+
+/**
+ * Extract and parse JSON from an LLM response. Handles:
+ *   - Markdown fences ```json ... ```
+ *   - Leading/trailing prose commentary
+ *   - Multiple JSON blocks (picks the first well-formed one)
+ *
+ * This is more lenient than a bare JSON.parse because models sometimes
+ * add preamble or trailing text despite "return only JSON" instructions.
+ */
+function parseJsonFromResponse<T>(raw: string): T {
+  // Strip code fences if present
+  let text = raw.trim();
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+
+  // Fast path: is the whole thing already valid JSON?
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    // fall through to substring extraction
+  }
+
+  // Substring extraction: find the first { or [ and walk to its matching
+  // close, respecting strings and nested braces. We don't use a regex
+  // because JSON can legitimately contain braces inside string values.
+  const startIdx = findFirst(text, ['{', '[']);
+  if (startIdx === -1) {
+    throw new Error(`No JSON found in response: ${text.slice(0, 200)}`);
+  }
+
+  const endIdx = findMatchingClose(text, startIdx);
+  if (endIdx === -1) {
+    throw new Error(`Unterminated JSON in response: ${text.slice(0, 200)}`);
+  }
+
+  const jsonStr = text.slice(startIdx, endIdx + 1);
+  try {
+    return JSON.parse(jsonStr) as T;
+  } catch (e: any) {
+    throw new Error(`Could not parse extracted JSON: ${e.message}. Text: ${jsonStr.slice(0, 200)}`);
+  }
+}
+
+function findFirst(s: string, chars: string[]): number {
+  for (let i = 0; i < s.length; i++) {
+    if (chars.includes(s[i])) return i;
+  }
+  return -1;
+}
+
+function findMatchingClose(s: string, start: number): number {
+  const openChar = s[start];
+  const closeChar = openChar === '{' ? '}' : ']';
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === openChar) depth++;
+    else if (ch === closeChar) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function extractText(message: any): string {
+  return message.content
+    .filter((b: any) => b.type === 'text')
+    .map((b: any) => b.text)
+    .join('')
+    .trim();
+}
+
+// =============================================================
+// Image tagging
+// =============================================================
+
+export interface TaggedItem {
+  category: 'shirt' | 'pants' | 'shoes' | 'purse' | 'dress' | 'outerwear' | 'accessory';
+  sub_category: string;
+  colors: string[];          // hex strings, primary first
+  brand_guess: string | null;
+  material: string | null;
+  pattern: string | null;
+  style_tags: string[];      // e.g. ['casual','preppy']
+  season_tags: string[];     // subset of ['spring','summer','fall','winter']
+  warmth_score: number;      // 1-5
+  formality_score: number;   // 1-5
+  name: string;              // short descriptive name
+  notes: string | null;
+}
+
+const TAG_SYSTEM = `You are a wardrobe cataloging assistant. You will be given a photo of a single clothing item or accessory. Return only a JSON object with these fields:
+
+{
+  "category": "shirt" | "pants" | "shoes" | "purse" | "dress" | "outerwear" | "accessory",
+  "sub_category": string (e.g. "silk blouse", "straight-leg jeans", "ankle boots", "tote"),
+  "colors": string[] (hex codes, primary color first, max 3),
+  "brand_guess": string | null (only if clearly visible, otherwise null),
+  "material": string | null (e.g. "silk", "denim", "leather"),
+  "pattern": string | null ("solid", "striped", "floral", etc.),
+  "style_tags": string[] (e.g. ["casual","minimalist","elevated"]),
+  "season_tags": string[] (subset of ["spring","summer","fall","winter"]),
+  "warmth_score": integer 1-5 (1=hot weather, 5=deep winter),
+  "formality_score": integer 1-5 (1=loungewear, 5=black tie),
+  "name": string (short, under 40 chars),
+  "notes": string | null (anything distinctive)
+}
+
+Return ONLY the JSON object, no preamble, no markdown fences.`;
+
+export async function tagItemImage(imageBase64: string, mediaType: string): Promise<TaggedItem> {
+  const message = await client().messages.create({
+    model: MODEL_TAG,
+    max_tokens: 800,
+    system: TAG_SYSTEM,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: mediaType as any,
+              data: imageBase64,
+            },
+          },
+          { type: 'text', text: 'Catalog this item.' },
+        ],
+      },
+    ],
+  });
+
+  const text = extractText(message);
+  return parseJsonFromResponse<TaggedItem>(text);
+}
+
+// =============================================================
+// Outfit ranking
+// =============================================================
+
+export interface CandidateOutfit {
+  id: string;
+  items: Array<{
+    id: string;
+    category: string;
+    sub_category: string | null;
+    colors: string[];
+    style_tags: string[];
+    warmth_score: number | null;
+    formality_score: number | null;
+    brand: string | null;
+    name: string | null;
+  }>;
+}
+
+export interface RankedOutfit {
+  id: string;
+  score: number;          // 0-100
+  reasoning: string;      // one or two sentences
+}
+
+export async function rankOutfits(
+  candidates: CandidateOutfit[],
+  context: {
+    temp_avg_f: number;
+    summary: string;
+    precip_chance: number;
+    occasion: string | null;
+  },
+  topN = 3
+): Promise<RankedOutfit[]> {
+  const system = `You are a wardrobe stylist. You will receive weather context, an optional occasion, and a list of candidate outfits from a user's real wardrobe. Rank them and return the top ${topN}. Consider: color harmony, style coherence, appropriateness for weather and occasion, and general aesthetic quality. The user values a high-quality, curated wardrobe and clean styling.
+
+Return ONLY a JSON array, no preamble:
+[
+  { "id": "<outfit id>", "score": <0-100 integer>, "reasoning": "<one or two natural sentences>" }
+]`;
+
+  const user = JSON.stringify({ context, candidates }, null, 2);
+
+  const message = await client().messages.create({
+    model: MODEL_RANK,
+    max_tokens: 1200,
+    system,
+    messages: [{ role: 'user', content: user }],
+  });
+
+  const text = extractText(message);
+  return parseJsonFromResponse<RankedOutfit[]>(text);
+}
+
+// =============================================================
+// Wishlist gap analysis
+// =============================================================
+
+export interface WishlistSuggestion {
+  description: string;
+  category: string;
+  reason: string;
+  brand_suggestions: string[];
+  price_range: string;
+  priority: number; // 1-5
+}
+
+export async function suggestWishlist(closetSummary: string): Promise<WishlistSuggestion[]> {
+  const system = `You analyze a user's wardrobe and suggest 3-6 high-quality pieces that would fill real gaps.
+
+The user's philosophy:
+- Curating a high-quality, long-lasting wardrobe. No fast fashion (no SHEIN, Temu, Zara, H&M, etc.) UNLESS the piece is thrifted.
+- Quality brands like Everlane, Quince, Reformation, Sezane, Madewell (select), Jenni Kayne, Filippa K, Cuyana, ARKET, COS (select), and similar. Investment pieces matter.
+- For items that are well-suited to thrifting (denim, leather, wool coats, vintage bags, premium brands secondhand on sites like The RealReal, Vestiaire Collective, or Poshmark), prefer that over buying new.
+- Focus on versatile pieces that work across many outfits.
+
+Return ONLY a JSON array:
+[
+  {
+    "description": string (specific: "silk midi slip skirt in bone or champagne"),
+    "category": "shirt" | "pants" | "shoes" | "purse" | "dress" | "outerwear" | "accessory",
+    "reason": string (one or two sentences explaining the gap it fills),
+    "brand_suggestions": string[] (2-4 real brands, noting "thrifted" or "secondhand" where appropriate),
+    "price_range": string (e.g. "$80-$150 new, under $50 thrifted"),
+    "priority": integer 1-5 (5 = biggest gap)
+  }
+]`;
+
+  const message = await client().messages.create({
+    model: MODEL_WISHLIST,
+    max_tokens: 1500,
+    system,
+    messages: [{ role: 'user', content: closetSummary }],
+  });
+
+  const text = extractText(message);
+  return parseJsonFromResponse<WishlistSuggestion[]>(text);
+}
+
+// =============================================================
+// Packing mode
+// =============================================================
+
+export interface PackingPlan {
+  selected_item_ids: string[];
+  day_outfits: Array<{
+    date: string;
+    outfit_item_ids: string[];
+    reasoning: string;
+  }>;
+  packing_notes: string;
+}
+
+export async function planPacking(
+  closetJson: string,
+  tripContext: {
+    destination: string;
+    days: Array<{ date: string; temp_min_f: number; temp_max_f: number; summary: string; precip_chance: number }>;
+    occasions: string[];
+  }
+): Promise<PackingPlan> {
+  const system = `You are a packing assistant. Given a user's closet and a trip forecast, pick a minimal set of versatile items that can mix-and-match across the trip, and propose a specific outfit for each day.
+
+Prioritize: versatility (pieces that work in multiple outfits), weather appropriateness, and the listed occasions. Keep the total item count lean. It is fine to wear the same bottom or shoes multiple times.
+
+Return ONLY a JSON object:
+{
+  "selected_item_ids": string[],
+  "day_outfits": [
+    { "date": "YYYY-MM-DD", "outfit_item_ids": string[], "reasoning": "<one or two sentences>" }
+  ],
+  "packing_notes": "<brief, natural note about the overall approach>"
+}`;
+
+  const user = JSON.stringify({ trip: tripContext, closet: JSON.parse(closetJson) });
+
+  const message = await client().messages.create({
+    model: MODEL_PACKING,
+    max_tokens: 2500,
+    system,
+    messages: [{ role: 'user', content: user }],
+  });
+
+  const text = extractText(message);
+  return parseJsonFromResponse<PackingPlan>(text);
+}

@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: #fdfbf7;
+    --bg-elevated: #ffffff;
+    --border: #e8dcc2;
+    --border-soft: #f2ead9;
+    --ink: #1a1712;
+    --ink-soft: #4a4339;
+    --ink-muted: #8a8275;
+    --accent: #7a4f3a;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-feature-settings: 'ss01', 'cv11';
+    min-height: 100vh;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: -0.02em;
+  }
+
+  ::selection {
+    background: var(--accent);
+    color: var(--bg);
+  }
+
+  /* Subtle paper grain overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1000;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='3'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.7 0'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>");
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium transition-all duration-200;
+    @apply border border-ink-800 bg-ink-900 text-ivory-50;
+    @apply hover:bg-ink-800 active:translate-y-px;
+    border-radius: 2px;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium transition-all;
+    @apply border border-ink-200 bg-transparent text-ink-800 hover:bg-ivory-100;
+    border-radius: 2px;
+  }
+  .btn-link {
+    @apply inline-flex items-center gap-1 text-sm text-ink-600 hover:text-ink-900 transition-colors underline-offset-4 hover:underline;
+  }
+  .input {
+    @apply w-full bg-transparent border-b border-ink-200 px-0 py-2.5 text-base text-ink-900;
+    @apply placeholder:text-ink-400 focus:outline-none focus:border-ink-900 transition-colors;
+  }
+  .card {
+    @apply bg-white border border-ivory-200;
+    border-radius: 2px;
+  }
+  .label {
+    @apply text-[11px] uppercase tracking-[0.18em] text-ink-400 font-medium;
+  }
+  .eyebrow {
+    @apply text-[10px] uppercase tracking-[0.3em] text-ink-400 font-medium;
+  }
+}
