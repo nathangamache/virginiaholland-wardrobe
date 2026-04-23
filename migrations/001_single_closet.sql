@@ -125,7 +125,6 @@ CREATE TABLE wishlist (
   category          TEXT,
   reason            TEXT,
   suggested_by_ai   BOOLEAN NOT NULL DEFAULT FALSE,
-  image_path        TEXT,
   link              TEXT,
   brand_suggestions TEXT[] NOT NULL DEFAULT '{}',
   price_range       TEXT,

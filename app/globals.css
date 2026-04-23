@@ -119,16 +119,6 @@
     @apply text-[10px] uppercase tracking-[0.3em] text-pink-700 font-medium;
   }
 
-  /* Cheetah accent strip — used sparingly as dividers */
-  .cheetah-strip {
-    height: 6px;
-    background-image: var(--cheetah);
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='80' viewBox='0 0 80 80'><g fill='%233a2416' fill-opacity='0.85'><ellipse cx='14' cy='12' rx='4' ry='3.2' transform='rotate(-15 14 12)'/><ellipse cx='42' cy='8' rx='3' ry='4'/><ellipse cx='64' cy='18' rx='4.5' ry='3' transform='rotate(25 64 18)'/><ellipse cx='10' cy='38' rx='3.5' ry='4.5' transform='rotate(-10 10 38)'/><ellipse cx='34' cy='42' rx='5' ry='3.5' transform='rotate(20 34 42)'/><ellipse cx='58' cy='48' rx='3' ry='4' transform='rotate(-20 58 48)'/><ellipse cx='18' cy='64' rx='4' ry='3' transform='rotate(15 18 64)'/><ellipse cx='48' cy='70' rx='3.5' ry='4' transform='rotate(-25 48 70)'/><ellipse cx='72' cy='60' rx='4' ry='3.5' transform='rotate(10 72 60)'/></g><g fill='%23d4a574' fill-opacity='0.5'><ellipse cx='14' cy='12' rx='6' ry='5' transform='rotate(-15 14 12)'/><ellipse cx='42' cy='8' rx='5' ry='6'/><ellipse cx='64' cy='18' rx='6.5' ry='5' transform='rotate(25 64 18)'/><ellipse cx='10' cy='38' rx='5.5' ry='6.5' transform='rotate(-10 10 38)'/><ellipse cx='34' cy='42' rx='7' ry='5.5' transform='rotate(20 34 42)'/><ellipse cx='58' cy='48' rx='5' ry='6' transform='rotate(-20 58 48)'/><ellipse cx='18' cy='64' rx='6' ry='5' transform='rotate(15 18 64)'/><ellipse cx='48' cy='70' rx='5.5' ry='6' transform='rotate(-25 48 70)'/><ellipse cx='72' cy='60' rx='6' ry='5.5' transform='rotate(10 72 60)'/></g></svg>");
-    background-size: 40px 40px;
-    background-repeat: repeat-x;
-    background-position: center;
-  }
-
   /* Decorative Paris ornament — floret character */
   .ornament::before {
     content: '❦';

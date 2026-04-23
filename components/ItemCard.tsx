@@ -41,27 +41,37 @@ export function ItemCard({
 
   const inner = (
     <div
-      className={`group relative aspect-square bg-ivory-100 overflow-hidden transition-all ${
-        selected ? 'ring-2 ring-ink-900 ring-offset-2 ring-offset-ivory-50' : ''
+      className={`group relative aspect-square bg-pink-50 overflow-hidden transition-all ${
+        selected ? 'ring-2 ring-pink-500 ring-offset-2 ring-offset-pink-50' : ''
       }`}
+      style={{ borderRadius: '3px' }}
     >
       {imgSrc ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={imgSrc} alt={name ?? sub_category ?? category} className="w-full h-full object-cover" />
+        <img
+          src={imgSrc}
+          alt={name ?? sub_category ?? category}
+          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+        />
       ) : (
-        <div className="w-full h-full flex items-center justify-center text-ink-400 font-display">
+        <div className="w-full h-full flex items-center justify-center text-pink-400 font-display italic">
           {category}
         </div>
       )}
       {favorite && (
-        <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-ivory-50 flex items-center justify-center text-xs">
+        <div className="absolute top-2 right-2 w-7 h-7 rounded-full bg-white/95 backdrop-blur-sm flex items-center justify-center text-xs text-pink-500 shadow-sm">
           ✦
         </div>
       )}
-      <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-ivory-50/95 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-        <div className="text-[11px] uppercase tracking-[0.12em] text-ink-400">{sub_category ?? category}</div>
+      {/* Hover info panel — solid white with blur so text reads over any image */}
+      <div
+        className="absolute inset-x-0 bottom-0 px-3 py-2.5 bg-white/90 backdrop-blur-md border-t border-white/60 opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200"
+      >
+        <div className="text-[10px] uppercase tracking-[0.15em] text-pink-700 font-medium truncate">
+          {sub_category ?? category}
+        </div>
         {(name || brand) && (
-          <div className="text-xs text-ink-800 truncate">
+          <div className="text-[13px] text-ink-900 truncate leading-tight mt-0.5">
             {name ?? brand}
           </div>
         )}

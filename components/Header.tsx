@@ -14,7 +14,10 @@ export function Header({ email }: { email: string }) {
   }
 
   return (
-    <header className="sticky top-0 z-40 bg-pink-50/85 backdrop-blur-md">
+    <header
+      className="sticky top-0 z-40 bg-pink-50/85 backdrop-blur-md border-b border-pink-200/60"
+      style={{ boxShadow: '0 4px 20px -8px rgba(176, 20, 86, 0.12), 0 2px 4px -1px rgba(176, 20, 86, 0.04)' }}
+    >
       <div className="px-6 py-4 flex items-center justify-between max-w-5xl mx-auto">
         <Link href="/" className="group">
           <div className="wordmark text-[32px] leading-none text-ink-900 italic group-hover:text-pink-700 transition-colors">
@@ -32,8 +35,10 @@ export function Header({ email }: { email: string }) {
           {open && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-              <div className="absolute right-0 top-12 w-64 bg-white border border-pink-200 shadow-lg shadow-pink-900/5 z-50 animate-fade-in" style={{ borderRadius: '4px' }}>
-                <div className="cheetah-strip" />
+              <div
+                className="absolute right-0 top-12 w-64 bg-white border border-pink-200 shadow-lg shadow-pink-900/5 z-50 animate-fade-in"
+                style={{ borderRadius: '4px' }}
+              >
                 <div className="px-4 py-3 border-b border-pink-100">
                   <div className="eyebrow mb-1">Signed in</div>
                   <div className="text-sm text-ink-800 truncate">{email}</div>
@@ -56,8 +61,6 @@ export function Header({ email }: { email: string }) {
           )}
         </div>
       </div>
-      {/* Cheetah strip as bottom accent — signature flourish */}
-      <div className="cheetah-strip opacity-60" />
     </header>
   );
 }

@@ -11,7 +11,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <div className="min-h-screen flex flex-col">
       <Header email={session.email} />
-      <main className="flex-1 pb-24">{children}</main>
+      <main
+        className="flex-1"
+        // Pad past the fixed bottom nav: its content is ~64px, plus 14-24px
+        // of bottom breathing room, plus iPhone safe-area inset. 96+ ensures
+        // no overlap on any device.
+        style={{
+          paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 96px)',
+        }}
+      >
+        {children}
+      </main>
       <NavBar />
     </div>
   );

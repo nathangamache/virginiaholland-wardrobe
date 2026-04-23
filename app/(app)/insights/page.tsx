@@ -234,9 +234,11 @@ function Stat({ label, value }: { label: string; value: string | number }) {
 }
 
 function Histogram({ title, data }: { title: string; data: Array<{ score: number; count: number }> }) {
-  if (!data.length) return null;
-  const byScore = Object.fromEntries(data.map((d) => [d.score, d.count]));
-  const max = Math.max(...data.map((d) => d.count), 1);
+  const byScore: Record<number, number> = Object.fromEntries(data.map((d) => [d.score, d.count]));
+  const counts = [1, 2, 3, 4, 5].map((s) => byScore[s] ?? 0);
+  const max = Math.max(...counts, 1);
+  const total = counts.reduce((a, b) => a + b, 0);
+
   const scales: Record<string, string[]> = {
     warmth: ['hot', 'warm', 'mild', 'cool', 'cold'],
     formality: ['lounge', 'casual', 'refined', 'formal', 'black tie'],
@@ -247,25 +249,43 @@ function Histogram({ title, data }: { title: string; data: Array<{ score: number
     <div>
       <div className="eyebrow mb-3">{title}</div>
       <div className="card p-5">
-        <div className="flex items-end gap-2 h-32">
-          {[1, 2, 3, 4, 5].map((s, i) => {
-            const count = byScore[s] ?? 0;
-            return (
-              <div key={s} className="flex-1 flex flex-col items-center gap-1.5">
-                <div className="text-[10px] font-mono text-ink-400">{count}</div>
-                <div className="w-full flex-1 flex items-end">
-                  <div
-                    className="w-full bg-ink-900 transition-all"
-                    style={{ height: `${(count / max) * 100}%`, borderRadius: '2px 2px 0 0' }}
-                  />
+        {total === 0 ? (
+          <div className="h-32 flex items-center justify-center text-xs text-ink-400">
+            No data yet
+          </div>
+        ) : (
+          <div className="flex items-end gap-2 h-32">
+            {[1, 2, 3, 4, 5].map((s, i) => {
+              const count = byScore[s] ?? 0;
+              // Minimum visible height so 0-count bars still appear as faint placeholders
+              const pct = count === 0 ? 0 : Math.max(8, (count / max) * 100);
+              const isMax = count === max && count > 0;
+              return (
+                <div key={s} className="flex-1 flex flex-col items-center gap-1.5 h-full">
+                  <div className={`text-[10px] font-mono ${count > 0 ? 'text-pink-700' : 'text-ink-400'}`}>
+                    {count}
+                  </div>
+                  <div className="w-full flex-1 flex items-end relative">
+                    {/* Faint background track so empty bars show the slot exists */}
+                    <div
+                      className="absolute inset-x-0 bottom-0 bg-pink-100"
+                      style={{ height: '4px', borderRadius: '2px 2px 0 0' }}
+                    />
+                    {count > 0 && (
+                      <div
+                        className={`w-full transition-all relative ${isMax ? 'bg-pink-500' : 'bg-pink-300'}`}
+                        style={{ height: `${pct}%`, borderRadius: '2px 2px 0 0' }}
+                      />
+                    )}
+                  </div>
+                  <div className={`text-[10px] uppercase tracking-[0.1em] ${count === max && count > 0 ? 'text-pink-700 font-medium' : 'text-ink-400'}`}>
+                    {labels[i]}
+                  </div>
                 </div>
-                <div className="text-[10px] uppercase tracking-[0.1em] text-ink-400">
-                  {labels[i]}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

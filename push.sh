@@ -1,16 +1,17 @@
 #!/bin/bash
+set -e
 
-# Exit if no commit message provided
 if [ -z "$1" ]; then
   echo "Usage: ./push.sh \"commit message\""
   exit 1
 fi
 
-# Add all changes
 git add -A
 
-# Commit
-git commit -m "$1"
+if git diff --cached --quiet; then
+  echo "No changes to commit."
+  exit 0
+fi
 
-# Push to current branch
-git push
+git commit -m "$1"
+git push -u origin "$(git branch --show-current)"

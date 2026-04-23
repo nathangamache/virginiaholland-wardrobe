@@ -241,7 +241,7 @@ export interface WishlistSuggestion {
 }
 
 export async function suggestWishlist(closetSummary: string): Promise<WishlistSuggestion[]> {
-  const system = `You analyze a user's wardrobe and suggest 3-6 high-quality pieces that would fill real gaps.
+  const baseSystem = `You analyze a user's wardrobe and suggest 3-6 high-quality pieces that would fill real gaps.
 
 The user's philosophy:
 - Curating a high-quality, long-lasting wardrobe. No fast fashion (no SHEIN, Temu, Zara, H&M, etc.) UNLESS the piece is thrifted.
@@ -261,15 +261,201 @@ Return ONLY a JSON array:
   }
 ]`;
 
+  // First attempt with the normal prompt
+  try {
+    const message = await client().messages.create({
+      model: MODEL_WISHLIST,
+      max_tokens: 1500,
+      system: baseSystem,
+      messages: [{ role: 'user', content: closetSummary }],
+    });
+    const text = extractText(message);
+    return parseJsonFromResponse<WishlistSuggestion[]>(text);
+  } catch (firstError: any) {
+    // Claude may have asked for more context instead of returning JSON —
+    // common when the closet is sparse or empty. Retry once with a more
+    // permissive prompt that instructs it to make reasonable assumptions
+    // and always return JSON no matter what.
+    console.warn('wishlist-suggest first attempt failed, retrying with fallback prompt', firstError.message);
+
+    const fallbackSystem = `${baseSystem}
+
+IMPORTANT OVERRIDES FOR THIS RESPONSE:
+- The wardrobe data may be sparse, empty, or very limited. Do not ask for more information.
+- Do your best with whatever data is provided. Make reasonable assumptions about what a curated wardrobe typically needs.
+- If the closet is empty or nearly empty, suggest foundational wardrobe staples that work for any curated closet (well-fitting jeans, a quality white shirt, good leather boots, a timeless dress, a structured bag, etc.).
+- Suggestions do not need to be perfect matches to existing pieces — they just need to be thoughtful recommendations for a high-quality curated wardrobe.
+- You MUST return a JSON array matching the schema above. No commentary, no questions, no prose explanations, no markdown code fences. ONLY the JSON array.`;
+
+    const message = await client().messages.create({
+      model: MODEL_WISHLIST,
+      max_tokens: 1500,
+      system: fallbackSystem,
+      messages: [{ role: 'user', content: closetSummary }],
+    });
+    const text = extractText(message);
+    return parseJsonFromResponse<WishlistSuggestion[]>(text);
+  }
+}
+
+// =============================================================
+// Product search — given a wishlist idea, use web search to find
+// real buyable products. Returns Claude's final text + structured
+// product data extracted from search result citations.
+// =============================================================
+
+export interface FoundProduct {
+  title: string;
+  brand: string | null;
+  price: string | null;
+  url: string;
+  source: string; // e.g. "everlane.com" — the domain, for display
+  notes: string | null;
+}
+
+export interface ProductSearchResult {
+  products: FoundProduct[];
+  summary: string; // brief intro from Claude
+  searched_queries: string[]; // what Claude actually searched
+}
+
+// Mass-market fast fashion domains — blocked from wishlist product searches
+// to steer Claude toward quality/sustainable sources.
+const BLOCKED_FAST_FASHION_DOMAINS = [
+  'shein.com',
+  'temu.com',
+  'fashionnova.com',
+  'prettylittlething.com',
+  'boohoo.com',
+  'missguided.com',
+  'romwe.com',
+  'zaful.com',
+  'nastygal.com',
+  'yesstyle.com',
+  'cider.com',
+  'urbanic.com',
+  // Amazon fashion lives on amazon.com but mixes with non-fashion; leaving it
+  // allowed for now since blocking all of amazon.com would starve searches.
+];
+
+export async function findProductsForSuggestion(suggestion: {
+  description: string;
+  category: string;
+  reason?: string | null;
+  brand_suggestions?: string[];
+  price_range?: string | null;
+}): Promise<ProductSearchResult> {
+  const system = `You are helping curate a high-quality wardrobe. When given a wishlist idea, search the web to find 3-6 specific real products that match.
+
+Priorities, in order:
+1. Quality and longevity over trend chasing
+2. Secondhand / thrifted options (The RealReal, Vestiaire Collective, Poshmark, Depop, eBay) when the piece is well-suited to thrifting (denim, leather, wool coats, designer bags)
+3. Well-made mid-range brands (Everlane, Quince, Reformation, Sezane, Cuyana, ARKET, COS, Filippa K, Jenni Kayne)
+4. Classic investment pieces from premium brands when the budget supports it
+
+Search strategy:
+- Run 2-4 targeted searches combining the item description with "thrifted", "secondhand", or specific quality brands
+- Prefer direct product pages (everlane.com/products/..., therealreal.com/products/...) over listicles or magazine roundups
+- If something looks like fast-fashion slop (synthetic, $15, trend-y), skip it
+
+After searching, respond with ONLY a JSON object in this shape (no preamble, no markdown):
+{
+  "summary": string (one sentence intro, e.g. "Here are a few secondhand options..."),
+  "products": [
+    {
+      "title": string (concise product name),
+      "brand": string | null,
+      "price": string | null (e.g. "$148" or "$80 (secondhand)"),
+      "url": string (direct link to the product page),
+      "source": string (just the domain, e.g. "everlane.com"),
+      "notes": string | null (one short line about why this one fits)
+    }
+  ]
+}
+
+CRITICAL: Do NOT wrap any text in <cite> tags or include any citation markup inside the JSON string values. Write plain text only. The URL field is already the source attribution.`;
+
+  const userPrompt = `Find specific products for this wishlist idea:
+
+Description: ${suggestion.description}
+Category: ${suggestion.category}
+${suggestion.reason ? `Why needed: ${suggestion.reason}\n` : ''}${suggestion.brand_suggestions?.length ? `Brand hints: ${suggestion.brand_suggestions.join(', ')}\n` : ''}${suggestion.price_range ? `Budget: ${suggestion.price_range}\n` : ''}
+Search the web and return 3-6 concrete products.`;
+
   const message = await client().messages.create({
     model: MODEL_WISHLIST,
-    max_tokens: 1500,
+    max_tokens: 4000,
     system,
-    messages: [{ role: 'user', content: closetSummary }],
+    messages: [{ role: 'user', content: userPrompt }],
+    tools: [
+      {
+        type: 'web_search_20250305',
+        name: 'web_search',
+        max_uses: 5,
+        blocked_domains: BLOCKED_FAST_FASHION_DOMAINS,
+      } as any,
+    ],
   });
 
+  // Parse the final text block. Web search responses interleave server_tool_use,
+  // web_search_tool_result, and text blocks — we want just the text.
   const text = extractText(message);
-  return parseJsonFromResponse<WishlistSuggestion[]>(text);
+
+  // Track which queries Claude actually ran, for display
+  const searched_queries: string[] = [];
+  for (const block of (message.content as any[])) {
+    if (block.type === 'server_tool_use' && block.name === 'web_search') {
+      const q = block.input?.query;
+      if (q) searched_queries.push(q);
+    }
+  }
+
+  try {
+    const parsed = parseJsonFromResponse<{ summary: string; products: FoundProduct[] }>(text);
+    return {
+      summary: stripCitations(parsed.summary ?? ''),
+      products: (parsed.products ?? []).map((p) => ({
+        title: stripCitations(p.title),
+        brand: p.brand ? stripCitations(p.brand) : null,
+        price: p.price ? stripCitations(p.price) : null,
+        url: p.url,
+        source: p.source ? stripCitations(p.source) : p.source,
+        notes: p.notes ? stripCitations(p.notes) : null,
+      })),
+      searched_queries,
+    };
+  } catch (e: any) {
+    // If Claude refused to return JSON (possible with long search results),
+    // return an empty product list with the raw text as summary so the UI
+    // can at least show what came back.
+    console.warn('product search parse failed, returning raw text', e);
+    return {
+      summary: stripCitations(text.slice(0, 300)),
+      products: [],
+      searched_queries,
+    };
+  }
+}
+
+/**
+ * Strip citation markup that Claude injects around cited text when web search
+ * is enabled. The model wraps cited phrases in <cite index="...">...</cite>
+ * tags; we want the text content without the tags. Also handles a few edge
+ * cases: self-closing cite tags, malformed tags, and doubled spaces left by
+ * removed tags.
+ */
+function stripCitations(s: string): string {
+  if (!s) return s;
+  return s
+    // Remove closing tag + its content's surrounding markup: <cite index="0">text</cite> -> text
+    .replace(/<cite[^>]*?>([\s\S]*?)<\/cite>/gi, '$1')
+    // Remove any stray opening tags that didn't get a matching close
+    .replace(/<cite[^>]*?>/gi, '')
+    // Remove any stray close tags
+    .replace(/<\/cite>/gi, '')
+    // Collapse doubled whitespace the removals may have left
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 // =============================================================

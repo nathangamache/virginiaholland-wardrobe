@@ -17,7 +17,12 @@ export function NavBar() {
   return (
     <nav
       className="fixed bottom-0 inset-x-0 z-40 bg-pink-50/95 backdrop-blur border-t border-pink-200"
-      style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+      // Always pad at least 14px at the bottom, and more if the device reports
+      // a safe-area inset (iPhone home indicator, etc). This keeps the nav
+      // visually lifted off the screen edge on every device.
+      style={{
+        paddingBottom: 'max(14px, calc(env(safe-area-inset-bottom, 0px) + 10px))',
+      }}
     >
       <div className="max-w-5xl mx-auto grid grid-cols-5 relative">
         {tabs.map((t) => {
