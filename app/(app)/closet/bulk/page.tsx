@@ -454,7 +454,7 @@ function ItemRow({
       </div>
 
       {(item.status === 'ready' || item.status === 'error') && phase !== 'saving' && phase !== 'done' && (
-        <button onClick={onRemove} className="text-ink-400 hover:text-ink-900 self-start" aria-label="Remove">
+        <button onClick={onRemove} className="-m-2 p-2 text-ink-400 hover:text-ink-900 self-start" aria-label="Remove">
           <X className="w-4 h-4" />
         </button>
       )}

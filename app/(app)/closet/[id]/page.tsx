@@ -293,12 +293,17 @@ function ColorEditor({
           key={`${c}-${i}`}
           type="button"
           onClick={() => onChange(colors.filter((_, idx) => idx !== i))}
-          className="group relative w-9 h-9 border border-pink-200 hover:border-pink-500 transition-colors"
+          className="relative w-9 h-9 border border-pink-200 hover:border-pink-500 transition-colors"
           style={{ background: c, borderRadius: '3px' }}
-          title={`${c} — tap to remove`}
+          aria-label={`Remove color ${c}`}
         >
-          <span className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-            <X className="w-4 h-4 text-white drop-shadow" strokeWidth={3} />
+          {/* Small always-visible remove badge in the corner */}
+          <span
+            className="absolute -top-1 -right-1 w-4 h-4 bg-white border border-pink-300 flex items-center justify-center shadow-sm"
+            style={{ borderRadius: '999px' }}
+            aria-hidden="true"
+          >
+            <X className="w-2.5 h-2.5 text-pink-700" strokeWidth={3} />
           </span>
         </button>
       ))}

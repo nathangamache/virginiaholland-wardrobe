@@ -63,9 +63,14 @@ export function ItemCard({
           ✦
         </div>
       )}
-      {/* Hover info panel — solid white with blur so text reads over any image */}
+      {/* Info panel — always visible on touch devices so mobile users see
+          piece name and category without needing to hover. On hover-capable
+          devices (desktop with mouse), it hides until hover for a cleaner grid.
+          Uses @media (hover: hover) to distinguish. */}
       <div
-        className="absolute inset-x-0 bottom-0 px-3 py-2.5 bg-white/90 backdrop-blur-md border-t border-white/60 opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200"
+        className="absolute inset-x-0 bottom-0 px-3 py-2.5 bg-white/90 backdrop-blur-md border-t border-white/60 transition-all duration-200
+                   [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:translate-y-1
+                   [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-hover:translate-y-0"
       >
         <div className="text-[10px] uppercase tracking-[0.15em] text-pink-700 font-medium truncate">
           {sub_category ?? category}

@@ -200,7 +200,7 @@ function WishCard({ wish, onRemove }: { wish: Wish; onRemove: () => void }) {
         </div>
         <button
           onClick={onRemove}
-          className="opacity-0 group-hover:opacity-100 text-ink-400 hover:text-pink-700 transition-opacity"
+          className="-m-2 p-2 text-ink-400 hover:text-pink-700 transition-colors flex-shrink-0"
           aria-label="Remove"
         >
           <X className="w-4 h-4" />
@@ -306,7 +306,7 @@ function PendingSuggestionCard({
         <div className="wordmark italic text-lg text-ink-900">{suggestion.description}</div>
         <button
           onClick={onDismiss}
-          className="text-ink-400 hover:text-pink-700"
+          className="-m-2 p-2 text-ink-400 hover:text-pink-700 transition-colors flex-shrink-0"
           aria-label="Dismiss"
         >
           <X className="w-4 h-4" />
