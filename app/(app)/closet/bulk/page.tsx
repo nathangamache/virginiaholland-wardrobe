@@ -6,10 +6,28 @@ import { Plus, Upload, Check, X, RefreshCw } from 'lucide-react';
 
 type Category = 'shirt' | 'pants' | 'shoes' | 'purse' | 'dress' | 'outerwear' | 'accessory';
 
-// 'processing' covers both tagging and bg removal (they run in parallel on
-// the server). 'ready' means the user can edit and save. 'saving' is the
-// DB insert — fast, no heavy work.
-type Status = 'queued' | 'processing' | 'ready' | 'saving' | 'saved' | 'error';
+// Status flow for a bulk row, in order:
+//   queued      → waiting in line for upload
+//   uploading   → actively being uploaded (network transfer in progress)
+//   queued_proc → uploaded, waiting in line for tagging + bg removal
+//   processing  → actively running tagging + bg removal on the server
+//   ready       → done, user can edit and save
+//   saving      → DB insert in flight
+//   saved       → committed
+//   error       → something failed; row shows retry
+//
+// We keep upload and process as separate phases so the user sees fast
+// "uploading" feedback during the network phase (many parallel uploads)
+// even before the slower processing phase has caught up.
+type Status =
+  | 'queued'
+  | 'uploading'
+  | 'queued_proc'
+  | 'processing'
+  | 'ready'
+  | 'saving'
+  | 'saved'
+  | 'error';
 
 interface Tagged {
   category: Category;
@@ -32,7 +50,9 @@ interface BulkItem {
   previewUrl: string;
   status: Status;
   tagged?: Tagged;
-  // After /api/items/process completes:
+  // After phase 1 (upload) completes — server holds the raw bytes here:
+  stash_id?: string;
+  // After phase 2 (process) completes:
   image_path?: string;
   image_nobg_path?: string | null;
   thumb_path?: string;
@@ -57,9 +77,14 @@ interface BulkItem {
 }
 
 const CATEGORIES: Category[] = ['shirt', 'pants', 'shoes', 'purse', 'dress', 'outerwear', 'accessory'];
-// 4 matches the server's BG_REMOVAL_SESSION_POOL default. Running more than
-// the pool size wastes nothing (extra requests just queue) but feels snappier
-// because the client sees immediate progress. We leave 1 slot of headroom.
+
+// Two separate concurrency limits for the two phases:
+// - UPLOAD_CONCURRENCY: how many photos to upload in parallel. This is
+//   network-bound (multipart POSTs), so we can run more without straining
+//   the server.
+// - PROCESS_CONCURRENCY: how many to run tagging + bg removal on. Matches
+//   the server's BG_REMOVAL_SESSION_POOL (4) with 1 slot of headroom.
+const UPLOAD_CONCURRENCY = 8;
 const PROCESS_CONCURRENCY = 5;
 const SAVE_CONCURRENCY = 8;
 
@@ -105,21 +130,85 @@ export default function BulkUploadPage() {
     void runProcessing(newItems);
   }
 
+  /**
+   * Two-phase pipeline:
+   *
+   *   Phase 1 (upload): UPLOAD_CONCURRENCY workers POST raw photos to
+   *   /api/items/upload and get back stash IDs. While each photo is being
+   *   uploaded its row shows "Uploading…"; once uploaded it goes to
+   *   "Ready to tag" until phase 2 picks it up.
+   *
+   *   Phase 2 (process): runs CONCURRENTLY with phase 1, but at lower
+   *   concurrency. Each worker pulls items that have a stash_id but are
+   *   still "queued_proc", tells the server to process them, and gets back
+   *   the same { paths, urls, tagged, ... } shape the old single-step
+   *   endpoint used to return.
+   *
+   * The two phases run in parallel: phase 2 starts processing the first
+   * uploaded items while phase 1 is still uploading later ones. This is
+   * what gives the user the rapid "rows-going-from-uploading-to-tagging"
+   * feedback you'd expect from a polished bulk uploader.
+   */
   async function runProcessing(list: BulkItem[]) {
-    // Each parallel worker pulls the next un-processed item until the list
-    // is exhausted. This matches the server-side concurrency limit so we
-    // don't queue dozens of HTTP requests we can't fulfill yet.
-    let idx = 0;
-    const worker = async () => {
-      while (idx < list.length) {
-        const myIdx = idx++;
+    // Shared state between the two phases. We use ref-like idx counters
+    // (let-vars closed over by both worker pools) since this is a pure
+    // sequential dispatch problem.
+    let uploadIdx = 0;
+    // Queue of items ready to be processed. We enqueue here from upload
+    // workers and dequeue from process workers. JavaScript is single-
+    // threaded so a plain array is safe — no synchronization needed.
+    const processQueue: BulkItem[] = [];
+    let uploadDone = false;
+
+    const uploadWorker = async () => {
+      while (uploadIdx < list.length) {
+        const myIdx = uploadIdx++;
         const current = list[myIdx];
         try {
-          updateItem(current.id, { status: 'processing' });
+          updateItem(current.id, { status: 'uploading' });
 
           const form = new FormData();
           form.append('photo', current.file);
-          const res = await fetch('/api/items/process', { method: 'POST', body: form });
+          const res = await fetch('/api/items/upload', {
+            method: 'POST',
+            body: form,
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => null);
+            throw new Error(body?.detail || body?.error || `upload failed (${res.status})`);
+          }
+          const json = await res.json();
+
+          // Update local state — and keep a reference for phase 2 with
+          // the new stash_id attached.
+          const withStash: BulkItem = { ...current, stash_id: json.stash_id, status: 'queued_proc' };
+          updateItem(current.id, { stash_id: json.stash_id, status: 'queued_proc' });
+          processQueue.push(withStash);
+        } catch (e: any) {
+          updateItem(current.id, { status: 'error', error: e.message ?? 'upload failed' });
+        }
+      }
+    };
+
+    const processWorker = async () => {
+      while (true) {
+        const current = processQueue.shift();
+        if (!current) {
+          // No work right now — but more might arrive from upload workers.
+          // If uploads are still going, sleep briefly and retry.
+          if (uploadDone) return;
+          await new Promise((r) => setTimeout(r, 100));
+          continue;
+        }
+
+        try {
+          updateItem(current.id, { status: 'processing' });
+
+          const res = await fetch('/api/items/process-stashed', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ stash_id: current.stash_id }),
+          });
           if (!res.ok) {
             const body = await res.json().catch(() => null);
             throw new Error(body?.detail || body?.error || `processing failed (${res.status})`);
@@ -127,28 +216,22 @@ export default function BulkUploadPage() {
           const json = await res.json();
           const t: Tagged | null = json.tagged;
 
-          // Preload the bg-removed image BEFORE flipping the row to 'ready'.
-          // Otherwise the row briefly shows status="Ready" while the <img>
-          // is still rendering the original-photo blob URL — which looks
-          // jarring (the cutout pops in a moment after "Ready" appears).
+          // Preload the bg-removed image so the row's <img> already has it
+          // by the time we flip status to 'ready'. Otherwise the row briefly
+          // shows "Ready" while the cutout is still loading, which looks bad.
           const nobgUrl: string | null = json.urls.nobg;
           if (nobgUrl) {
-            await preloadImage(nobgUrl).catch(() => {
-              // Image preload failure isn't fatal — proceed anyway and let
-              // the regular <img> tag handle its own load.
-            });
+            await preloadImage(nobgUrl).catch(() => {});
           }
 
           updateItem(current.id, {
             status: 'ready',
-            // server-saved paths
             image_path: json.paths.original,
             image_nobg_path: json.paths.nobg,
             thumb_path: json.paths.thumb,
             nobg_url: nobgUrl,
             nobg_succeeded: !!json.nobg_succeeded,
             tagging_succeeded: !!json.tagging_succeeded,
-            // tag fields (may be missing if AI failed; fields are optional)
             tagged: t ?? undefined,
             name: t?.name ?? '',
             category: t?.category,
@@ -169,7 +252,19 @@ export default function BulkUploadPage() {
       }
     };
 
-    await Promise.all(Array.from({ length: PROCESS_CONCURRENCY }, () => worker()));
+    // Launch both pools concurrently. Upload workers finish first because
+    // each individual upload is much shorter than processing.
+    const uploadPool = Promise.all(
+      Array.from({ length: UPLOAD_CONCURRENCY }, () => uploadWorker())
+    ).then(() => {
+      uploadDone = true;
+    });
+
+    const processPool = Promise.all(
+      Array.from({ length: PROCESS_CONCURRENCY }, () => processWorker())
+    );
+
+    await Promise.all([uploadPool, processPool]);
     setPhase('review');
   }
 
@@ -310,7 +405,13 @@ export default function BulkUploadPage() {
     updateItem(id, { category: cat });
   }
 
-  const processingCount = items.filter((it) => it.status === 'queued' || it.status === 'processing').length;
+  const processingCount = items.filter(
+    (it) =>
+      it.status === 'queued' ||
+      it.status === 'uploading' ||
+      it.status === 'queued_proc' ||
+      it.status === 'processing'
+  ).length;
   const readyCount = items.filter((it) => it.status === 'ready').length;
   const savedCount = items.filter((it) => it.status === 'saved').length;
   const errorCount = items.filter((it) => it.status === 'error').length;
@@ -318,13 +419,48 @@ export default function BulkUploadPage() {
     (it) => it.status === 'ready' && it.nobg_succeeded === false
   ).length;
   const totalCount = items.length;
-  // Progress percentage for the overall batch — combines processing + saving
-  const progressPct =
-    totalCount === 0
-      ? 0
-      : Math.round(
-          ((savedCount + errorCount + (phase === 'review' ? readyCount : 0)) / totalCount) * 100
-        );
+
+  /**
+   * Progress percentage for the overall batch.
+   *
+   * Each item contributes a fraction based on how far along it is:
+   *   queued                     → 0
+   *   uploading                  → 0.1   (started but not done)
+   *   queued_proc                → 0.4   (uploaded, waiting for processing)
+   *   processing                 → 0.5   (processing in progress)
+   *   ready / saving             → 1.0   (processing done — that's the bulk of the work)
+   *   saved / error              → 1.0
+   *
+   * The previous version only counted ready items toward progress when phase
+   * was 'review', so the bar showed 0% throughout the entire processing phase
+   * even when many items were already done. This version always reflects
+   * actual progress regardless of phase.
+   */
+  const progressPct = (() => {
+    if (totalCount === 0) return 0;
+    let weighted = 0;
+    for (const it of items) {
+      switch (it.status) {
+        case 'uploading':
+          weighted += 0.1;
+          break;
+        case 'queued_proc':
+          weighted += 0.4;
+          break;
+        case 'processing':
+          weighted += 0.5;
+          break;
+        case 'ready':
+        case 'saving':
+        case 'saved':
+        case 'error':
+          weighted += 1;
+          break;
+        // 'queued' contributes 0
+      }
+    }
+    return Math.round((weighted / totalCount) * 100);
+  })();
 
   return (
     <div className="px-6 py-8 max-w-5xl mx-auto pb-32">
@@ -492,7 +628,10 @@ function BulkRow({
       <div className="w-24 h-24 flex-shrink-0 bg-pink-50 relative overflow-hidden" style={{ borderRadius: '2px' }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={item.nobg_url ?? item.previewUrl} alt="" className="w-full h-full object-contain" />
-        {(item.status === 'queued' || item.status === 'processing') && (
+        {(item.status === 'queued' ||
+          item.status === 'uploading' ||
+          item.status === 'queued_proc' ||
+          item.status === 'processing') && (
           <div className="absolute inset-0 bg-pink-50/70 flex items-center justify-center backdrop-blur-[1px]">
             <div className="flex gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-pulse" style={{ animationDelay: '0ms' }} />
@@ -580,6 +719,8 @@ function BulkRow({
 function StatusLine({ item }: { item: BulkItem }) {
   const statusLabel = {
     queued: 'Waiting…',
+    uploading: 'Uploading…',
+    queued_proc: 'Waiting to process…',
     processing: 'Tagging + removing background…',
     ready: 'Ready',
     saving: 'Saving…',
@@ -589,6 +730,8 @@ function StatusLine({ item }: { item: BulkItem }) {
 
   const statusColor = {
     queued: 'text-ink-400',
+    uploading: 'text-ink-400',
+    queued_proc: 'text-ink-400',
     processing: 'text-ink-400',
     ready: 'text-pink-700',
     saving: 'text-ink-400',

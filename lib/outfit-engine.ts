@@ -306,7 +306,45 @@ export function generateCandidates(
     }
   }
 
-  // Sort by coherence score and take top N
+  // Sort by coherence score (highest first), then walk the list and pick
+  // candidates that don't share too many pieces with already-picked ones.
+  // Without this filter, a single great shirt or dress would dominate the
+  // top 15 because every variation of it (different shoes, different purse)
+  // would coherence-score similarly. We want Claude to see variety in
+  // anchor pieces, not 15 minor variations on one outfit.
   all.sort((a, b) => b.score - a.score);
-  return all.slice(0, maxCandidates).map((s) => s.candidate);
+
+  const HEURISTIC_MAX_OVERLAP = 2;
+  const picked: ScoredCandidate[] = [];
+  const skipped: ScoredCandidate[] = [];
+
+  function itemIdSet(c: CandidateOutfit): Set<string> {
+    return new Set(c.items.map((i) => i.id));
+  }
+  function maxOverlapSoFar(c: CandidateOutfit): number {
+    const me = itemIdSet(c);
+    let max = 0;
+    for (const p of picked) {
+      const theirs = itemIdSet(p.candidate);
+      let count = 0;
+      for (const id of me) if (theirs.has(id)) count++;
+      if (count > max) max = count;
+    }
+    return max;
+  }
+
+  for (const s of all) {
+    if (picked.length >= maxCandidates) break;
+    if (picked.length === 0 || maxOverlapSoFar(s.candidate) <= HEURISTIC_MAX_OVERLAP) {
+      picked.push(s);
+    } else {
+      skipped.push(s);
+    }
+  }
+  // Top up if diversity filtering was too aggressive for a small closet
+  while (picked.length < maxCandidates && skipped.length > 0) {
+    picked.push(skipped.shift()!);
+  }
+
+  return picked.map((s) => s.candidate);
 }

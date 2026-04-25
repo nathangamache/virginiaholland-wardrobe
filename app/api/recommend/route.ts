@@ -99,27 +99,72 @@ export async function GET(req: NextRequest) {
   // them sorted but we sort here too as a safety net in case of model drift.)
   ranked.sort((a, b) => b.score - a.score);
 
-  // Display logic:
-  //   - Always show at least the top 3
-  //   - If more than 3 candidates score >= 90, show all of them (up to 6) so
-  //     genuinely great outfits aren't hidden just because there are several
-  //   - Cap at 6 even if many score high, to avoid overwhelming the user
   const QUALITY_THRESHOLD = 90;
   const MIN_RESULTS = 3;
   const MAX_RESULTS = 6;
-  const aboveThreshold = ranked.filter((r) => r.score >= QUALITY_THRESHOLD);
-  const display =
-    aboveThreshold.length >= MIN_RESULTS
-      ? aboveThreshold.slice(0, MAX_RESULTS)
-      : ranked.slice(0, MIN_RESULTS);
 
+  /**
+   * Diversity-aware display selection.
+   *
+   * Without this, the top 3 would frequently be near-duplicates: same dress
+   * with/without a wallet, or smocked-vs-strapless versions of the same
+   * silhouette. Sonnet correctly identifies that these all "work" but the
+   * user wants 3 distinct visual options, not 3 variations on a theme.
+   *
+   * Algorithm: walk the ranked list and pick options that share fewer than
+   * MAX_OVERLAP items with anything already picked. If we run out of
+   * sufficiently-different options to hit MIN_RESULTS, we fall back to
+   * filling the remaining slots from the highest-scoring leftovers.
+   */
   const candidateMap = Object.fromEntries(candidates.map((c) => [c.id, c]));
-  const results = display
+  const MAX_OVERLAP = 2; // an outfit may share up to 2 items with one already-picked
+
+  const aboveThreshold = ranked.filter((r) => r.score >= QUALITY_THRESHOLD);
+  const pool = aboveThreshold.length >= MIN_RESULTS ? aboveThreshold : ranked;
+
+  const picked: Array<{ id: string; score: number; reasoning: string }> = [];
+  const skipped: Array<{ id: string; score: number; reasoning: string }> = [];
+
+  function itemIdSet(outfitId: string): Set<string> {
+    const c = candidateMap[outfitId];
+    if (!c) return new Set();
+    return new Set(c.items.map((i: { id: string }) => i.id));
+  }
+
+  function overlapWithPicked(outfitId: string): number {
+    const myItems = itemIdSet(outfitId);
+    let maxOverlap = 0;
+    for (const p of picked) {
+      const theirs = itemIdSet(p.id);
+      let count = 0;
+      for (const id of myItems) if (theirs.has(id)) count++;
+      if (count > maxOverlap) maxOverlap = count;
+    }
+    return maxOverlap;
+  }
+
+  for (const r of pool) {
+    if (picked.length >= MAX_RESULTS) break;
+    if (picked.length === 0 || overlapWithPicked(r.id) <= MAX_OVERLAP) {
+      picked.push(r);
+    } else {
+      skipped.push(r);
+    }
+  }
+
+  // If diversity filtering left us short of MIN_RESULTS, top up from the
+  // skipped pile (higher-scoring duplicates first). This keeps the floor at 3
+  // even if the closet has limited variety.
+  while (picked.length < MIN_RESULTS && skipped.length > 0) {
+    picked.push(skipped.shift()!);
+  }
+
+  const results = picked
     .map((r) => ({ ...r, outfit: candidateMap[r.id] }))
     .filter((r) => r.outfit);
 
   console.log(
-    `[recommend] ranked=${ranked.length}, above${QUALITY_THRESHOLD}=${aboveThreshold.length}, displaying=${results.length}`
+    `[recommend] ranked=${ranked.length}, above${QUALITY_THRESHOLD}=${aboveThreshold.length}, displaying=${results.length} (skipped ${skipped.length} for similarity)`
   );
 
   const response = { weather: today, season, results };
