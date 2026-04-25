@@ -30,11 +30,13 @@ export default function OutfitsPage() {
   async function addPhoto(wearId: string, file: File) {
     setUploadingFor(wearId);
     try {
-      const { normalizeToJpeg } = await import('@/lib/normalize-image');
-      const normalized = await normalizeToJpeg(file);
       const form = new FormData();
-      form.append('photo', normalized);
-      await fetch(`/api/wears/${wearId}/photo`, { method: 'POST', body: form });
+      form.append('photo', file);
+      const res = await fetch(`/api/wears/${wearId}/photo`, { method: 'POST', body: form });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        console.error('photo upload failed', body?.detail || body?.error);
+      }
     } catch (e) {
       console.error('photo upload failed', e);
     } finally {

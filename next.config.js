@@ -6,25 +6,12 @@ const nextConfig = {
     },
   },
   images: {
-    // We serve images through our authenticated /api/images route,
-    // so we don't need Next's image optimization pipeline for them.
     unoptimized: true,
   },
-  // @imgly/background-removal and its ONNX Runtime backend run ONLY in the
-  // browser. Telling webpack to skip them for server bundles prevents their
-  // native modules from being traced into serverless output where they'd
-  // never run anyway (and could crash on CPUs lacking modern SIMD extensions).
-  webpack: (config, { isServer }) => {
-    if (isServer) {
-      config.externals = [
-        ...(config.externals || []),
-        '@imgly/background-removal',
-        'onnxruntime-web',
-        'onnxruntime-node',
-      ];
-    }
-    return config;
-  },
+  // Tell Next not to bundle these — they're native modules that must load from
+  // node_modules at runtime. Sharp does its own prebuilt binary handling,
+  // onnxruntime-node has native .node addons.
+  serverExternalPackages: ['sharp', 'onnxruntime-node'],
   async headers() {
     return [
       {

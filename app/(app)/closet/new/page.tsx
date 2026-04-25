@@ -36,17 +36,13 @@ function NewItemInner() {
   const searchParams = useSearchParams();
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Pending tracking — every item in progress has an ID in IndexedDB
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [resuming, setResuming] = useState(false);
 
   const [originalBlob, setOriginalBlob] = useState<Blob | null>(null);
   const [originalUrl, setOriginalUrl] = useState<string | null>(null);
-  const [nobgBlob, setNobgBlob] = useState<Blob | null>(null);
-  const [nobgUrl, setNobgUrl] = useState<string | null>(null);
 
-  const [processing, setProcessing] = useState<null | 'bg' | 'ai' | 'save'>(null);
-  const [bgDone, setBgDone] = useState(false);
+  const [processing, setProcessing] = useState<null | 'ai' | 'save'>(null);
   const [aiDone, setAiDone] = useState(false);
 
   const [meta, setMeta] = useState<
@@ -81,11 +77,6 @@ function NewItemInner() {
           setOriginalBlob(existing.originalBlob);
           setOriginalUrl(URL.createObjectURL(existing.originalBlob));
         }
-        if (existing.nobgBlob) {
-          setNobgBlob(existing.nobgBlob);
-          setNobgUrl(URL.createObjectURL(existing.nobgBlob));
-          setBgDone(true);
-        }
         setMeta({
           name: existing.meta.name ?? undefined,
           category: existing.meta.category as Category | undefined,
@@ -111,8 +102,7 @@ function NewItemInner() {
     })();
   }, [searchParams]);
 
-  // ---- Whenever meta changes, persist to pending store ----
-  // Debounced with a small delay so every keystroke doesn't hit IDB.
+  // Persist to pending store whenever meta changes (debounced 400ms)
   useEffect(() => {
     if (!pendingId || !originalBlob) return;
     const handle = setTimeout(() => {
@@ -124,16 +114,14 @@ function NewItemInner() {
 
   async function persistPending(overrides?: Partial<PendingItem>) {
     if (!pendingId || !originalBlob) return;
-    const status: PendingItem['status'] =
-      bgDone && aiDone ? 'ready' : bgDone || aiDone ? 'partial' : 'processing';
     try {
       await savePending({
         id: pendingId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        status,
+        status: aiDone ? 'ready' : 'partial',
         originalBlob,
-        nobgBlob,
+        nobgBlob: null,
         meta: {
           name: meta.name ?? undefined,
           brand: meta.brand ?? null,
@@ -159,30 +147,13 @@ function NewItemInner() {
 
   async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     setError(null);
-    const rawFile = e.target.files?.[0];
-    if (!rawFile) return;
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-    setProcessing('bg');
-    let file: File;
-    try {
-      const { normalizeToJpeg } = await import('@/lib/normalize-image');
-      file = await normalizeToJpeg(rawFile);
-    } catch (err: any) {
-      console.error('Normalize failed', err);
-      setError("Couldn't read that image. Try a different format.");
-      setProcessing(null);
-      return;
-    }
-
-    // Create a new pending record immediately so the photo is safe
-    // even if the user navigates away during processing.
     const newId = newPendingId();
     setPendingId(newId);
     setOriginalBlob(file);
     setOriginalUrl(URL.createObjectURL(file));
-    setNobgBlob(null);
-    setNobgUrl(null);
-    setBgDone(false);
     setAiDone(false);
 
     try {
@@ -199,44 +170,19 @@ function NewItemInner() {
       console.warn('could not save pending', e);
     }
 
-    runBackgroundRemoval(file, newId);
-    runTagging(file, newId);
+    runTagging(file);
   }
 
-  async function runBackgroundRemoval(file: Blob, pid: string) {
-    setProcessing('bg');
-    try {
-      const { removeBackgroundClean } = await import('@/lib/bg-removal');
-      const blob = await removeBackgroundClean(file);
-      setNobgBlob(blob);
-      setNobgUrl(URL.createObjectURL(blob));
-      setBgDone(true);
-
-      // Update the pending record with the bg-removed blob
-      try {
-        const existing = await getPending(pid);
-        if (existing) {
-          await savePending({ ...existing, nobgBlob: blob, status: 'partial', updatedAt: Date.now() });
-        }
-      } catch (e) {
-        console.warn('persist nobg failed', e);
-      }
-    } catch (e: any) {
-      console.error('BG removal failed', e);
-      setError('Background removal failed. You can still save with just the original photo.');
-      setBgDone(true); // Mark done (failed) so save button becomes available
-    } finally {
-      setProcessing((p) => (p === 'bg' ? null : p));
-    }
-  }
-
-  async function runTagging(file: Blob, pid: string) {
-    setProcessing((p) => p ?? 'ai');
+  async function runTagging(file: Blob) {
+    setProcessing('ai');
     try {
       const form = new FormData();
       form.append('image', file);
       const res = await fetch('/api/ai/tag-item', { method: 'POST', body: form });
-      if (!res.ok) throw new Error('tagging failed');
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail || body?.error || `AI tagging failed (${res.status})`);
+      }
       const json = await res.json();
       const t: Tagged = json.tagged;
       setMeta((m) => ({
@@ -255,9 +201,10 @@ function NewItemInner() {
         notes: t.notes,
       }));
       setAiDone(true);
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      setAiDone(true); // failed, but unblock the UI
+      setError(e.message || 'Auto-tagging failed. You can fill in details manually.');
+      setAiDone(true); // unblock the UI so user can save
     } finally {
       setProcessing((p) => (p === 'ai' ? null : p));
     }
@@ -269,10 +216,10 @@ function NewItemInner() {
       return;
     }
     setProcessing('save');
+    setError(null);
     try {
       const form = new FormData();
       form.append('original', originalBlob, 'original.jpg');
-      if (nobgBlob) form.append('nobg', nobgBlob, 'nobg.png');
       form.append(
         'meta',
         JSON.stringify({
@@ -293,9 +240,11 @@ function NewItemInner() {
         })
       );
       const res = await fetch('/api/items', { method: 'POST', body: form });
-      if (!res.ok) throw new Error('save failed');
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail || body?.error || `Save failed (${res.status})`);
+      }
 
-      // Clear pending record now that it's persisted to the server
       if (pendingId) {
         try {
           await deletePending(pendingId);
@@ -304,8 +253,8 @@ function NewItemInner() {
         }
       }
       router.push('/closet');
-    } catch (e) {
-      setError('Save failed. Try again.');
+    } catch (e: any) {
+      setError(e.message || 'Save failed. Try again.');
       setProcessing(null);
     }
   }
@@ -328,8 +277,6 @@ function NewItemInner() {
     setMeta({ ...meta, [field]: next });
   }
 
-  const preview = nobgUrl ?? originalUrl;
-  const bgSpinning = processing === 'bg' || (originalBlob && !bgDone);
   const aiSpinning = processing === 'ai' || (originalBlob && !aiDone);
 
   return (
@@ -376,26 +323,19 @@ function NewItemInner() {
       ) : (
         <div className="grid md:grid-cols-2 gap-8">
           <div className="space-y-3">
-            <div className="card aspect-square bg-pink-50 overflow-hidden relative">
-              {preview && (
+            <div className="card aspect-square bg-pink-50 overflow-hidden">
+              {originalUrl && (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={preview} alt="" className="w-full h-full object-contain" />
-              )}
-              {bgSpinning && (
-                <div className="absolute inset-0 flex items-center justify-center bg-pink-50/70 backdrop-blur-sm">
-                  <div className="text-xs uppercase tracking-[0.2em] text-pink-700 animate-pulse">
-                    Removing background…
-                  </div>
-                </div>
+                <img src={originalUrl} alt="" className="w-full h-full object-contain" />
               )}
             </div>
             <div className="flex gap-2 text-[10px] uppercase tracking-[0.15em] text-ink-400">
-              <div className={bgDone ? 'text-pink-700' : 'text-ink-400'}>
-                {bgDone ? '✓' : '•'} Background
-              </div>
-              <span>·</span>
               <div className={aiDone ? 'text-pink-700' : 'text-ink-400'}>
                 {aiDone ? '✓' : '•'} Auto-tagged
+              </div>
+              <span>·</span>
+              <div className="text-ink-400">
+                • Background removed on save
               </div>
             </div>
           </div>

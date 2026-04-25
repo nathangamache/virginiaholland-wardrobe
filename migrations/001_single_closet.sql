@@ -1,30 +1,24 @@
--- Wardrobe single-closet schema (v2)
--- Replaces migrations/001_initial.sql. The app is single-closet; there is no
--- user concept in the data model. Authentication is a whitelist-based login
--- gate only (see auth_codes, auth_rate_limits below).
+-- Wardrobe single-closet schema (idempotent version).
 --
--- To apply: since we're pre-production with no real data, this file drops
--- all tables from the previous schema and recreates them.
+-- Safe to run against:
+--   (a) an empty database — creates everything fresh
+--   (b) a database already at this schema — no-ops
+--   (c) a database from an older schema — the migration runner's
+--       schema_migrations table prevents re-runs, so we don't need
+--       defensive drops here
+--
+-- This migration relies on the runner (scripts/migrate.js) to only
+-- apply it once per database. For databases that already have this
+-- schema from a different source (e.g. pg_restore), run:
+--     npm run migrate:baseline
+-- FIRST to mark migrations as applied without running them.
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- =============================================================
--- Clean slate: drop old per-user tables
--- =============================================================
-DROP TABLE IF EXISTS outfit_wears CASCADE;
-DROP TABLE IF EXISTS outfits CASCADE;
-DROP TABLE IF EXISTS wishlist CASCADE;
-DROP TABLE IF EXISTS trips CASCADE;
-DROP TABLE IF EXISTS items CASCADE;
-DROP TABLE IF EXISTS auth_codes CASCADE;
-DROP TABLE IF EXISTS auth_rate_limits CASCADE;
-DROP TABLE IF EXISTS weather_cache CASCADE;
-DROP TABLE IF EXISTS users CASCADE;   -- no longer used
-
--- =============================================================
 -- Auth codes (login gate only, no user record)
 -- =============================================================
-CREATE TABLE auth_codes (
+CREATE TABLE IF NOT EXISTS auth_codes (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email       TEXT NOT NULL,
   code_hash   TEXT NOT NULL,
@@ -33,10 +27,10 @@ CREATE TABLE auth_codes (
   ip          TEXT,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_auth_codes_email ON auth_codes(email);
-CREATE INDEX idx_auth_codes_expires ON auth_codes(expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_codes_email ON auth_codes(email);
+CREATE INDEX IF NOT EXISTS idx_auth_codes_expires ON auth_codes(expires_at);
 
-CREATE TABLE auth_rate_limits (
+CREATE TABLE IF NOT EXISTS auth_rate_limits (
   email         TEXT NOT NULL,
   window_start  TIMESTAMPTZ NOT NULL,
   attempts      INT NOT NULL DEFAULT 1,
@@ -46,7 +40,7 @@ CREATE TABLE auth_rate_limits (
 -- =============================================================
 -- Wardrobe items
 -- =============================================================
-CREATE TABLE items (
+CREATE TABLE IF NOT EXISTS items (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
   category          TEXT NOT NULL CHECK (category IN (
@@ -84,14 +78,14 @@ CREATE TABLE items (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_items_category ON items(category);
-CREATE INDEX idx_items_favorite ON items(favorite) WHERE favorite = TRUE;
-CREATE INDEX idx_items_last_worn ON items(last_worn_at);
+CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
+CREATE INDEX IF NOT EXISTS idx_items_favorite ON items(favorite) WHERE favorite = TRUE;
+CREATE INDEX IF NOT EXISTS idx_items_last_worn ON items(last_worn_at);
 
 -- =============================================================
 -- Outfits
 -- =============================================================
-CREATE TABLE outfits (
+CREATE TABLE IF NOT EXISTS outfits (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name          TEXT,
   occasion      TEXT,
@@ -104,7 +98,7 @@ CREATE TABLE outfits (
 -- =============================================================
 -- Outfit wears (history)
 -- =============================================================
-CREATE TABLE outfit_wears (
+CREATE TABLE IF NOT EXISTS outfit_wears (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   outfit_id         UUID REFERENCES outfits(id) ON DELETE SET NULL,
   item_ids          UUID[] NOT NULL DEFAULT '{}',
@@ -114,12 +108,12 @@ CREATE TABLE outfit_wears (
   notes             TEXT,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_wears_worn_on ON outfit_wears(worn_on DESC);
+CREATE INDEX IF NOT EXISTS idx_wears_worn_on ON outfit_wears(worn_on DESC);
 
 -- =============================================================
 -- Wishlist
 -- =============================================================
-CREATE TABLE wishlist (
+CREATE TABLE IF NOT EXISTS wishlist (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   description       TEXT NOT NULL,
   category          TEXT,
@@ -137,7 +131,7 @@ CREATE TABLE wishlist (
 -- =============================================================
 -- Trips (packing mode)
 -- =============================================================
-CREATE TABLE trips (
+CREATE TABLE IF NOT EXISTS trips (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name                  TEXT NOT NULL,
   destination           TEXT,
@@ -157,7 +151,7 @@ CREATE TABLE trips (
 -- =============================================================
 -- Weather cache
 -- =============================================================
-CREATE TABLE weather_cache (
+CREATE TABLE IF NOT EXISTS weather_cache (
   cache_key     TEXT PRIMARY KEY,
   data          JSONB NOT NULL,
   fetched_at    TIMESTAMPTZ NOT NULL DEFAULT now()

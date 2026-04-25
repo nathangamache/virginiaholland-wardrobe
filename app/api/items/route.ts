@@ -4,13 +4,16 @@ import { requireSession } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
 import { saveBuffer } from '@/lib/storage';
 import { processJpeg, processPng } from '@/lib/image';
+import { removeBackground } from '@/lib/bg-removal-server';
+import { bgRemovalPool, imageProcessingPool } from '@/lib/work-queue';
+import { ApiError, routeHandler, badInput } from '@/lib/api-error';
 
 // ---- GET /api/items -------------------------------------------------
-export async function GET(req: NextRequest) {
+export const GET = routeHandler(async (req: NextRequest) => {
   try {
     await requireSession();
   } catch {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    throw new ApiError(401, 'Not signed in', 'Authentication required.', 'UNAUTHORIZED');
   }
 
   const { searchParams } = req.nextUrl;
@@ -46,9 +49,19 @@ export async function GET(req: NextRequest) {
     values
   );
   return NextResponse.json({ items });
-}
+});
 
 // ---- POST /api/items ------------------------------------------------
+//
+// Accepts an `original` image file (any format sharp can decode — JPEG, PNG,
+// HEIC, WebP, TIFF, GIF) and `meta` JSON. Server does everything:
+//   - normalize original to JPEG
+//   - run ISNet background removal → save nobg PNG
+//   - generate 480px square thumbnail from nobg on cream background
+//
+// Client no longer ships a nobg blob. No more 80MB model download in Virginia's
+// browser. No 30-60s wait on her phone.
+//
 const metaSchema = z.object({
   category: z.enum(['shirt', 'pants', 'shoes', 'purse', 'dress', 'outerwear', 'accessory']),
   sub_category: z.string().optional().nullable(),
@@ -67,52 +80,78 @@ const metaSchema = z.object({
   purchase_price: z.number().optional().nullable(),
 });
 
-export async function POST(req: NextRequest) {
+export const POST = routeHandler(async (req: NextRequest) => {
   try {
     await requireSession();
   } catch {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    throw new ApiError(401, 'Not signed in', 'Authentication required.', 'UNAUTHORIZED');
   }
 
-  const form = await req.formData();
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    throw badInput('Could not parse upload form.');
+  }
+
   const original = form.get('original') as File | null;
-  const nobg = form.get('nobg') as File | null;
   const metaRaw = form.get('meta');
-  if (!original || !metaRaw) {
-    return NextResponse.json({ error: 'missing original or meta' }, { status: 400 });
-  }
+  if (!original) throw badInput('Missing photo.');
+  if (!metaRaw) throw badInput('Missing metadata.');
 
-  let meta;
+  let meta: z.infer<typeof metaSchema>;
   try {
     meta = metaSchema.parse(JSON.parse(metaRaw.toString()));
   } catch (e: any) {
-    return NextResponse.json({ error: 'invalid meta', detail: e.message }, { status: 400 });
+    throw badInput(`Invalid metadata: ${e.message}`);
   }
 
   const originalBuf = Buffer.from(await original.arrayBuffer());
-  const normalized = await processJpeg(originalBuf, { maxW: 2000, maxH: 2000, quality: 88 });
+
+  // Normalize → JPEG
+  let normalized: { buffer: Buffer; width: number; height: number };
+  try {
+    normalized = await imageProcessingPool.run(() =>
+      processJpeg(originalBuf, { maxW: 2000, maxH: 2000, quality: 88 })
+    );
+  } catch (e: any) {
+    throw new ApiError(
+      400,
+      'Could not process the uploaded photo',
+      e.message || 'Unknown image error',
+      'IMAGE_PROCESSING_FAILED',
+      { fileName: original.name, fileSize: original.size }
+    );
+  }
   const originalPath = await saveBuffer('items', normalized.buffer, 'jpg');
 
-  const occupiesSlots: string[] =
-    meta.category === 'dress' ? ['shirt', 'pants'] : [];
+  const occupiesSlots: string[] = meta.category === 'dress' ? ['shirt', 'pants'] : [];
 
+  // Background removal — non-fatal. If it fails we save without the nobg image.
   let nobgPath: string | null = null;
-  let thumbPath: string | null = null;
-  const sourceForThumb = nobg ? Buffer.from(await nobg.arrayBuffer()) : normalized.buffer;
-
-  if (nobg) {
-    const processedNobg = await processPng(sourceForThumb, { maxW: 1600, maxH: 1600 });
+  let nobgBuf: Buffer | null = null;
+  try {
+    nobgBuf = await bgRemovalPool.run(() => removeBackground(originalBuf));
+    const processedNobg = await imageProcessingPool.run(() =>
+      processPng(nobgBuf!, { maxW: 1600, maxH: 1600 })
+    );
     nobgPath = await saveBuffer('items-nobg', processedNobg.buffer, 'png');
+  } catch (e: any) {
+    console.warn('[items] bg removal failed, saving without it:', e.message);
   }
 
-  const thumb = await processJpeg(sourceForThumb, {
-    maxW: 480,
-    maxH: 480,
-    quality: 84,
-    flattenBg: { r: 253, g: 251, b: 247 },
-    square: true,
-  });
-  thumbPath = await saveBuffer('thumbs', thumb.buffer, 'jpg');
+  // Thumbnail — prefer nobg (flattened onto cream) for a clean grid aesthetic
+  const sourceForThumb = nobgBuf ?? normalized.buffer;
+  const thumb = await imageProcessingPool.run(() =>
+    processJpeg(sourceForThumb, {
+      maxW: 480,
+      maxH: 480,
+      quality: 84,
+      flattenBg: { r: 253, g: 251, b: 247 },
+      square: true,
+    })
+  );
+  const thumbPath = await saveBuffer('thumbs', thumb.buffer, 'jpg');
 
   const row = await queryOne<{ id: string }>(
     `INSERT INTO items (
@@ -147,5 +186,12 @@ export async function POST(req: NextRequest) {
     ]
   );
 
-  return NextResponse.json({ id: row!.id });
-}
+  return NextResponse.json({
+    id: row!.id,
+    nobg_succeeded: !!nobgPath,
+  });
+});
+
+export const runtime = 'nodejs';
+// BG removal 3-8s per image; give headroom
+export const maxDuration = 90;

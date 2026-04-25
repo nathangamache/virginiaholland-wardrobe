@@ -2,26 +2,23 @@
 
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { X, Check, AlertCircle, Upload } from 'lucide-react';
+import { Plus, Upload, Check, X } from 'lucide-react';
 
 type Category = 'shirt' | 'pants' | 'shoes' | 'purse' | 'dress' | 'outerwear' | 'accessory';
-type Status = 'queued' | 'normalizing' | 'removing-bg' | 'tagging' | 'ready' | 'saving' | 'saved' | 'error';
 
-const CATEGORIES: Category[] = ['shirt', 'pants', 'shoes', 'purse', 'dress', 'outerwear', 'accessory'];
-const CONCURRENCY = 3;
-const SAVE_BATCH = 5;
+type Status = 'queued' | 'tagging' | 'ready' | 'saving' | 'saved' | 'error';
 
 interface Tagged {
   category: Category;
   sub_category: string;
   colors: string[];
   brand_guess: string | null;
-  material: string | null;
-  pattern: string | null;
   style_tags: string[];
   season_tags: string[];
   warmth_score: number;
   formality_score: number;
+  material: string | null;
+  pattern: string | null;
   name: string;
   notes: string | null;
 }
@@ -30,109 +27,70 @@ interface BulkItem {
   id: string;
   file: File;
   previewUrl: string;
-  originalBlob: Blob | null;
-  nobgBlob: Blob | null;
-  nobgUrl: string | null;
   status: Status;
-  error: string | null;
-  name: string;
-  category: Category | null;
-  sub_category: string;
-  brand: string | null;
-  colors: string[];
-  style_tags: string[];
-  season_tags: string[];
-  warmth_score: number | null;
-  formality_score: number | null;
-  material: string | null;
-  pattern: string | null;
-  notes: string | null;
-  favorite: boolean;
-  tagged: Tagged | null;
+  tagged?: Tagged;
+  name?: string;
+  category?: Category;
+  sub_category?: string;
+  brand?: string | null;
+  colors?: string[];
+  style_tags?: string[];
+  season_tags?: string[];
+  warmth_score?: number;
+  formality_score?: number;
+  material?: string | null;
+  pattern?: string | null;
+  notes?: string | null;
+  error?: string;
 }
+
+const CATEGORIES: Category[] = ['shirt', 'pants', 'shoes', 'purse', 'dress', 'outerwear', 'accessory'];
+const TAG_CONCURRENCY = 4;
+const SAVE_CONCURRENCY = 3;
 
 export default function BulkUploadPage() {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<BulkItem[]>([]);
-  const [phase, setPhase] = useState<'select' | 'processing' | 'review' | 'saving' | 'done'>('select');
-  const [savedCount, setSavedCount] = useState(0);
+  const [phase, setPhase] = useState<'picking' | 'processing' | 'review' | 'saving' | 'done'>(
+    'picking'
+  );
 
-  function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  function updateItem(id: string, patch: Partial<BulkItem>) {
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+  }
+
+  async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
     if (!files.length) return;
-    const newItems: BulkItem[] = files.map((file, i) => ({
-      id: `${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`,
-      file,
-      previewUrl: URL.createObjectURL(file),
-      originalBlob: file,
-      nobgBlob: null,
-      nobgUrl: null,
+
+    const newItems: BulkItem[] = files.map((f) => ({
+      id: Math.random().toString(36).slice(2),
+      file: f,
+      previewUrl: URL.createObjectURL(f),
       status: 'queued',
-      error: null,
-      name: '',
-      category: null,
-      sub_category: '',
-      brand: null,
-      colors: [],
-      style_tags: [],
-      season_tags: [],
-      warmth_score: null,
-      formality_score: null,
-      material: null,
-      pattern: null,
-      notes: null,
-      favorite: false,
-      tagged: null,
     }));
     setItems(newItems);
     setPhase('processing');
-    runPipeline(newItems);
+    void runTagging(newItems);
   }
 
-  async function runPipeline(list: BulkItem[]) {
-    const [{ removeBackgroundClean }, { normalizeToJpeg }] = await Promise.all([
-      import('@/lib/bg-removal'),
-      import('@/lib/normalize-image'),
-    ]);
-
+  async function runTagging(list: BulkItem[]) {
     let idx = 0;
-    const processOne = async () => {
+    const worker = async () => {
       while (idx < list.length) {
         const myIdx = idx++;
         const current = list[myIdx];
         try {
-          // Step 0: normalize to JPEG. Strips HEIC/AVIF/TIFF down to a
-          // universally-supported format for both our server and the AI call.
-          updateItem(current.id, { status: 'normalizing' });
-          let normalized: File;
-          try {
-            normalized = await normalizeToJpeg(current.file);
-          } catch (e) {
-            throw new Error('unsupported image format');
-          }
-          // Swap the stored file reference so later steps (save) use the
-          // normalized JPEG rather than the original HEIC/etc.
-          updateItem(current.id, {
-            file: normalized,
-            originalBlob: normalized,
-            previewUrl: URL.createObjectURL(normalized),
-          });
-
-          updateItem(current.id, { status: 'removing-bg' });
-          let nobgBlob: Blob | null = null;
-          try {
-            nobgBlob = await removeBackgroundClean(normalized);
-          } catch (e) {
-            console.warn('bg removal failed for', current.id, e);
-          }
-          const nobgUrl = nobgBlob ? URL.createObjectURL(nobgBlob) : null;
-          updateItem(current.id, { nobgBlob, nobgUrl, status: 'tagging' });
+          updateItem(current.id, { status: 'tagging' });
 
           const form = new FormData();
-          form.append('image', normalized);
+          form.append('image', current.file);
           const res = await fetch('/api/ai/tag-item', { method: 'POST', body: form });
-          if (!res.ok) throw new Error('tagging failed');
+          if (!res.ok) {
+            const body = await res.json().catch(() => null);
+            throw new Error(body?.detail || body?.error || `tagging failed (${res.status})`);
+          }
           const json = await res.json();
           const t: Tagged = json.tagged;
 
@@ -158,93 +116,96 @@ export default function BulkUploadPage() {
       }
     };
 
-    await Promise.all(Array.from({ length: CONCURRENCY }, () => processOne()));
+    await Promise.all(Array.from({ length: TAG_CONCURRENCY }, () => worker()));
     setPhase('review');
   }
 
-  function updateItem(id: string, patch: Partial<BulkItem>) {
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+  async function saveAll() {
+    setPhase('saving');
+    const toSave = items.filter((it) => it.status === 'ready');
+
+    let idx = 0;
+    const worker = async () => {
+      while (idx < toSave.length) {
+        const myIdx = idx++;
+        const current = toSave[myIdx];
+        try {
+          updateItem(current.id, { status: 'saving' });
+
+          const form = new FormData();
+          form.append('original', current.file);
+          form.append(
+            'meta',
+            JSON.stringify({
+              category: current.category,
+              sub_category: current.sub_category || null,
+              name: current.name || null,
+              brand: current.brand || null,
+              material: current.material ?? null,
+              pattern: current.pattern ?? null,
+              colors: current.colors ?? [],
+              style_tags: current.style_tags ?? [],
+              season_tags: current.season_tags ?? [],
+              warmth_score: current.warmth_score ?? null,
+              formality_score: current.formality_score ?? null,
+              favorite: false,
+              notes: current.notes ?? null,
+            })
+          );
+
+          const res = await fetch('/api/items', { method: 'POST', body: form });
+          if (!res.ok) {
+            const body = await res.json().catch(() => null);
+            throw new Error(body?.detail || body?.error || `save failed (${res.status})`);
+          }
+          updateItem(current.id, { status: 'saved' });
+        } catch (e: any) {
+          updateItem(current.id, { status: 'error', error: e.message ?? 'save failed' });
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: SAVE_CONCURRENCY }, () => worker()));
+    setPhase('done');
   }
 
   function removeItem(id: string) {
     setItems((prev) => prev.filter((it) => it.id !== id));
   }
 
-  async function saveAll() {
-    setPhase('saving');
-    setSavedCount(0);
-    const toSave = items.filter((it) => it.status === 'ready' && it.category);
-
-    for (let i = 0; i < toSave.length; i += SAVE_BATCH) {
-      const batch = toSave.slice(i, i + SAVE_BATCH);
-      await Promise.all(
-        batch.map(async (it) => {
-          try {
-            updateItem(it.id, { status: 'saving' });
-            const form = new FormData();
-            form.append('original', it.originalBlob!, 'original.jpg');
-            if (it.nobgBlob) form.append('nobg', it.nobgBlob, 'nobg.png');
-            form.append(
-              'meta',
-              JSON.stringify({
-                category: it.category,
-                sub_category: it.sub_category || null,
-                name: it.name || null,
-                brand: it.brand || null,
-                material: it.material,
-                pattern: it.pattern,
-                colors: it.colors,
-                style_tags: it.style_tags,
-                season_tags: it.season_tags,
-                warmth_score: it.warmth_score,
-                formality_score: it.formality_score,
-                favorite: it.favorite,
-                notes: it.notes,
-              })
-            );
-            const res = await fetch('/api/items', { method: 'POST', body: form });
-            if (!res.ok) throw new Error('save failed');
-            updateItem(it.id, { status: 'saved' });
-            setSavedCount((c) => c + 1);
-          } catch (e: any) {
-            updateItem(it.id, { status: 'error', error: e.message ?? 'save failed' });
-          }
-        })
-      );
-    }
-
-    setPhase('done');
+  function updateCategory(id: string, cat: Category) {
+    updateItem(id, { category: cat });
   }
 
-  const processingCount = items.filter(
-    (it) =>
-      it.status === 'queued' ||
-      it.status === 'normalizing' ||
-      it.status === 'removing-bg' ||
-      it.status === 'tagging'
-  ).length;
+  const processingCount = items.filter((it) => it.status === 'queued' || it.status === 'tagging').length;
   const readyCount = items.filter((it) => it.status === 'ready').length;
+  const savedCount = items.filter((it) => it.status === 'saved').length;
   const errorCount = items.filter((it) => it.status === 'error').length;
 
   return (
     <div className="px-6 py-8 max-w-5xl mx-auto pb-32">
-      <div className="mb-8">
-        <div className="eyebrow mb-1">Bulk add</div>
-        <h1 className="wordmark italic text-5xl leading-none text-ink-900">Dump the closet</h1>
-        <p className="mt-2 text-sm text-ink-600">
-          Select many photos at once. Backgrounds get removed in your browser, then AI tags everything. Review and save.
-        </p>
+      <div className="flex items-start justify-between mb-8">
+        <div>
+          <div className="eyebrow mb-1">Bulk upload</div>
+          <h1 className="wordmark italic text-5xl leading-none text-ink-900">Dump the closet</h1>
+        </div>
+        <button onClick={() => router.push('/closet')} className="w-10 h-10 flex items-center justify-center text-ink-400 hover:text-pink-700" aria-label="Close">
+          <X className="w-5 h-5" />
+        </button>
       </div>
 
-      {phase === 'select' && (
-        <div className="card p-12 text-center">
+      {phase === 'picking' && (
+        <>
           <button
             onClick={() => fileRef.current?.click()}
-            className="inline-flex flex-col items-center gap-3 text-ink-600 hover:text-ink-900"
+            className="w-full border-2 border-dashed border-pink-300 p-12 text-center hover:border-pink-500 hover:bg-pink-50 transition-colors"
+            style={{ borderRadius: '4px' }}
           >
-            <Upload className="w-10 h-10" strokeWidth={1.3} />
-            <span className="font-display text-2xl">Select photos</span>
-            <span className="text-xs uppercase tracking-[0.2em] text-ink-400">Any number. Any order.</span>
+            <Upload className="w-8 h-8 text-pink-500 mx-auto mb-3" strokeWidth={1.5} />
+            <div className="wordmark italic text-2xl text-pink-500 mb-1">Choose multiple photos</div>
+            <div className="text-xs text-ink-400 tracking-wide">
+              We'll auto-tag each one with AI. You review, then save.
+            </div>
           </button>
           <input
             ref={fileRef}
@@ -254,125 +215,114 @@ export default function BulkUploadPage() {
             onChange={onFileChange}
             className="hidden"
           />
-        </div>
+        </>
       )}
 
-      {(phase === 'processing' || phase === 'review' || phase === 'saving' || phase === 'done') && (
+      {phase !== 'picking' && (
         <>
-          <div className="mb-6 flex flex-wrap gap-x-6 gap-y-2 text-sm">
-            <span className="text-ink-600">
-              <strong className="font-display text-lg text-ink-900 mr-1">{items.length}</strong>
-              total
-            </span>
+          <div className="mb-4 text-sm text-ink-600">
             {processingCount > 0 && (
-              <span className="text-ink-400">
+              <span className="mr-4">
                 <strong className="font-display text-lg text-ink-900 mr-1">{processingCount}</strong>
-                processing
+                processing…
               </span>
             )}
-            <span className="text-sage-700">
-              <strong className="font-display text-lg mr-1">{readyCount}</strong>
-              ready
-            </span>
-            {errorCount > 0 && (
-              <span className="text-clay-700">
-                <strong className="font-display text-lg mr-1">{errorCount}</strong>
-                failed
+            {readyCount > 0 && (
+              <span className="mr-4">
+                <strong className="font-display text-lg text-ink-900 mr-1">{readyCount}</strong>
+                ready
               </span>
             )}
-            {phase === 'saving' && (
-              <span className="text-ink-600">
+            {savedCount > 0 && (
+              <span className="mr-4 text-pink-700">
                 <strong className="font-display text-lg mr-1">{savedCount}</strong>
                 saved
               </span>
             )}
+            {errorCount > 0 && (
+              <span className="mr-4 text-pink-700">
+                <strong className="font-display text-lg mr-1">{errorCount}</strong>
+                failed
+              </span>
+            )}
           </div>
 
-          <div className="space-y-4">
-            {items.map((it) => (
-              <ItemRow
-                key={it.id}
-                item={it}
-                onChange={(p) => updateItem(it.id, p)}
-                onRemove={() => removeItem(it.id)}
-                phase={phase}
+          <div className="space-y-3">
+            {items.map((item) => (
+              <BulkRow
+                key={item.id}
+                item={item}
+                onRemove={() => removeItem(item.id)}
+                onUpdateCategory={(c) => updateCategory(item.id, c)}
+                onUpdateName={(v) => updateItem(item.id, { name: v })}
+                onUpdateBrand={(v) => updateItem(item.id, { brand: v })}
               />
             ))}
           </div>
-        </>
-      )}
 
-      {phase === 'review' && readyCount > 0 && (
-        <div className="fixed bottom-16 left-0 right-0 z-30 bg-ivory-50/95 backdrop-blur border-t border-ivory-200 px-6 py-3">
-          <div className="max-w-5xl mx-auto flex items-center justify-between">
-            <div className="text-sm text-ink-600">
-              Save {readyCount} item{readyCount === 1 ? '' : 's'} to closet
+          {phase === 'review' && readyCount > 0 && (
+            <div className="fixed bottom-20 left-0 right-0 bg-white border-t border-pink-200 p-4 z-30" style={{ boxShadow: '0 -4px 20px -8px rgba(176, 20, 86, 0.15)' }}>
+              <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
+                <div className="text-sm text-ink-600">
+                  {readyCount} piece{readyCount === 1 ? '' : 's'} ready to save. Background removal
+                  happens on save.
+                </div>
+                <button onClick={saveAll} className="btn">
+                  <Check className="w-4 h-4" />
+                  Save all
+                </button>
+              </div>
             </div>
-            <button onClick={saveAll} className="btn">Save all</button>
-          </div>
-        </div>
-      )}
+          )}
 
-      {phase === 'done' && (
-        <div className="card p-10 text-center mt-8">
-          <Check className="w-10 h-10 mx-auto text-sage-700 mb-3" strokeWidth={1.5} />
-          <div className="font-display text-2xl mb-1">{savedCount} saved</div>
-          <p className="text-sm text-ink-600 mb-6">
-            {errorCount > 0 && `${errorCount} failed. `}Everything else is in the closet.
-          </p>
-          <div className="flex gap-3 justify-center">
-            <button onClick={() => router.push('/closet')} className="btn">Open closet</button>
-            <button
-              onClick={() => {
-                setItems([]);
-                setPhase('select');
-                setSavedCount(0);
-              }}
-              className="btn-ghost"
-            >
-              Add more
-            </button>
-          </div>
-        </div>
+          {phase === 'done' && (
+            <div className="card p-6 text-center mt-6">
+              <div className="wordmark italic text-2xl text-ink-900 mb-2">Done!</div>
+              <div className="text-sm text-ink-600 mb-4">
+                Saved {savedCount} piece{savedCount === 1 ? '' : 's'}
+                {errorCount > 0 && <>, {errorCount} failed</>}
+              </div>
+              <button onClick={() => router.push('/closet')} className="btn">
+                Back to closet
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
 }
 
-function ItemRow({
+function BulkRow({
   item,
-  onChange,
   onRemove,
-  phase,
+  onUpdateCategory,
+  onUpdateName,
+  onUpdateBrand,
 }: {
   item: BulkItem;
-  onChange: (patch: Partial<BulkItem>) => void;
   onRemove: () => void;
-  phase: string;
+  onUpdateCategory: (c: Category) => void;
+  onUpdateName: (v: string) => void;
+  onUpdateBrand: (v: string) => void;
 }) {
-  const editable = item.status === 'ready' && phase === 'review';
-  const previewSrc = item.nobgUrl ?? item.previewUrl;
+  const editable =
+    item.status === 'ready' || item.status === 'saving' || item.status === 'saved';
 
   return (
     <div
-      className={`card p-3 flex gap-4 ${item.status === 'saved' ? 'opacity-50' : ''} ${
-        item.status === 'error' ? 'border-clay-300' : ''
-      }`}
+      className={`card flex gap-3 p-3 ${item.status === 'error' ? 'border-pink-300' : ''}`}
     >
-      <div className="w-24 h-24 flex-shrink-0 bg-ivory-100 relative overflow-hidden">
+      <div className="w-24 h-24 flex-shrink-0 bg-pink-50 relative overflow-hidden" style={{ borderRadius: '2px' }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={previewSrc} alt="" className="w-full h-full object-contain" />
-        {(item.status === 'queued' ||
-          item.status === 'normalizing' ||
-          item.status === 'removing-bg' ||
-          item.status === 'tagging' ||
-          item.status === 'saving') && (
-          <div className="absolute inset-0 bg-ivory-50/70 flex items-center justify-center">
-            <div className="w-3 h-3 rounded-full bg-ink-900 animate-pulse" />
+        <img src={item.previewUrl} alt="" className="w-full h-full object-contain" />
+        {(item.status === 'queued' || item.status === 'tagging' || item.status === 'saving') && (
+          <div className="absolute inset-0 bg-pink-50/70 flex items-center justify-center">
+            <div className="w-3 h-3 rounded-full bg-pink-500 animate-pulse" />
           </div>
         )}
         {item.status === 'saved' && (
-          <div className="absolute inset-0 bg-sage-300/80 flex items-center justify-center">
+          <div className="absolute inset-0 bg-pink-300/70 flex items-center justify-center">
             <Check className="w-5 h-5 text-ink-900" />
           </div>
         )}
@@ -380,35 +330,24 @@ function ItemRow({
 
       <div className="flex-1 min-w-0">
         <StatusLine item={item} />
-
-        {editable ? (
-          <div className="mt-2 space-y-2">
-            <div className="flex gap-2 items-center">
-              <input
-                value={item.name}
-                onChange={(e) => onChange({ name: e.target.value })}
-                placeholder="Name"
-                className="flex-1 bg-transparent border-b border-ivory-300 text-sm py-1 px-0 focus:outline-none focus:border-ink-900"
-              />
-              <button
-                onClick={() => onChange({ favorite: !item.favorite })}
-                className={`text-lg leading-none transition-colors ${
-                  item.favorite ? 'text-clay-700' : 'text-ink-300 hover:text-ink-600'
-                }`}
-                aria-label="Favorite"
-              >
-                ✦
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
+        {editable && (
+          <div className="mt-1 space-y-1">
+            <input
+              value={item.name ?? ''}
+              onChange={(e) => onUpdateName(e.target.value)}
+              placeholder="Name"
+              className="input !py-1 !text-sm"
+            />
+            <div className="flex flex-wrap gap-1">
               {CATEGORIES.map((c) => (
                 <button
                   key={c}
-                  onClick={() => onChange({ category: c })}
-                  className={`px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] border transition-all ${
+                  type="button"
+                  onClick={() => onUpdateCategory(c)}
+                  className={`px-2 py-0.5 text-[10px] uppercase tracking-[0.1em] border ${
                     item.category === c
-                      ? 'bg-ink-900 text-ivory-50 border-ink-900'
-                      : 'bg-transparent text-ink-600 border-ivory-300 hover:border-ink-400'
+                      ? 'bg-pink-500 text-white border-pink-500'
+                      : 'border-pink-200 text-ink-600'
                   }`}
                   style={{ borderRadius: '2px' }}
                 >
@@ -416,44 +355,17 @@ function ItemRow({
                 </button>
               ))}
             </div>
-            <div className="flex gap-2 text-xs text-ink-400">
-              <input
-                value={item.sub_category}
-                onChange={(e) => onChange({ sub_category: e.target.value })}
-                placeholder="Sub-category"
-                className="flex-1 bg-transparent border-b border-ivory-300 py-1 px-0 focus:outline-none focus:border-ink-600"
-              />
-              <input
-                value={item.brand ?? ''}
-                onChange={(e) => onChange({ brand: e.target.value })}
-                placeholder="Brand"
-                className="flex-1 bg-transparent border-b border-ivory-300 py-1 px-0 focus:outline-none focus:border-ink-600"
-              />
-            </div>
-            {item.colors.length > 0 && (
-              <div className="flex gap-1 items-center">
-                {item.colors.map((c, i) => (
-                  <div
-                    key={i}
-                    className="w-4 h-4 border border-ivory-300"
-                    style={{ background: c, borderRadius: '2px' }}
-                  />
-                ))}
-              </div>
-            )}
+            <input
+              value={item.brand ?? ''}
+              onChange={(e) => onUpdateBrand(e.target.value)}
+              placeholder="Brand"
+              className="input !py-1 !text-sm"
+            />
           </div>
-        ) : (
-          item.status !== 'queued' &&
-          item.name && (
-            <div className="mt-1 text-sm text-ink-600">
-              {item.name}
-              {item.category && <span className="text-ink-400"> · {item.category}</span>}
-            </div>
-          )
         )}
       </div>
 
-      {(item.status === 'ready' || item.status === 'error') && phase !== 'saving' && phase !== 'done' && (
+      {(item.status === 'ready' || item.status === 'error') && (
         <button onClick={onRemove} className="-m-2 p-2 text-ink-400 hover:text-ink-900 self-start" aria-label="Remove">
           <X className="w-4 h-4" />
         </button>
@@ -465,30 +377,21 @@ function ItemRow({
 function StatusLine({ item }: { item: BulkItem }) {
   const label = {
     queued: 'Queued',
-    normalizing: 'Reading photo…',
-    'removing-bg': 'Removing background…',
     tagging: 'Tagging with AI…',
     ready: 'Ready',
-    saving: 'Saving…',
+    saving: 'Saving (removing background)…',
     saved: 'Saved',
     error: `Failed${item.error ? `: ${item.error}` : ''}`,
   }[item.status];
 
   const color = {
     queued: 'text-ink-400',
-    normalizing: 'text-ink-400',
-    'removing-bg': 'text-ink-400',
     tagging: 'text-ink-400',
-    ready: 'text-sage-700',
+    ready: 'text-pink-700',
     saving: 'text-ink-400',
-    saved: 'text-sage-700',
-    error: 'text-clay-700',
+    saved: 'text-pink-700',
+    error: 'text-pink-700',
   }[item.status];
 
-  return (
-    <div className="flex items-center gap-1.5">
-      {item.status === 'error' && <AlertCircle className="w-3 h-3 text-clay-700" />}
-      <div className={`text-[10px] uppercase tracking-[0.2em] ${color}`}>{label}</div>
-    </div>
-  );
+  return <div className={`text-[10px] uppercase tracking-[0.15em] ${color}`}>{label}</div>;
 }
