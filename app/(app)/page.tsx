@@ -217,7 +217,7 @@ export default function HomePage() {
                   {loggingIdx === idx ? 'Logging…' : 'Wear this'}
                 </button>
               </div>
-              <div className="grid grid-cols-4 gap-2 md:gap-3 mb-3">
+              <div className="grid grid-cols-1 min-[400px]:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 md:gap-3 mb-3">
                 {rec.outfit.items.map((it) => {
                   const meta = itemLookup[it.id];
                   return (

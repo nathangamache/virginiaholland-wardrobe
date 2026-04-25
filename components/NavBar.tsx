@@ -16,10 +16,15 @@ export function NavBar() {
   const pathname = usePathname();
   return (
     <nav
-      className="fixed bottom-0 inset-x-0 z-40 bg-pink-50/95 backdrop-blur border-t border-pink-200"
-      // Always pad at least 14px at the bottom, and more if the device reports
-      // a safe-area inset (iPhone home indicator, etc). This keeps the nav
-      // visually lifted off the screen edge on every device.
+      // Solid pink-50 (no transparency) so nothing from the page shows through.
+      // Extra pt-3 extends the colored band above the icons — on iOS PWA when
+      // scroll bounce briefly exposes the area just above the nav, the user
+      // sees pink, not the white page background.
+      //
+      // The ::before pseudo-element extends the pink band an additional 12px
+      // upward off-screen-when-rendered-correctly, but visible during scroll
+      // bounce, so the transition between page content and nav stays clean.
+      className="fixed bottom-0 inset-x-0 z-40 bg-pink-50 border-t border-pink-200 pt-3 before:absolute before:bottom-full before:left-0 before:right-0 before:h-3 before:bg-pink-50 before:content-['']"
       style={{
         paddingBottom: 'max(14px, calc(env(safe-area-inset-bottom, 0px) + 10px))',
       }}
