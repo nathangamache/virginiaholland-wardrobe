@@ -1,8 +1,8 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { X } from 'lucide-react';
+import { X, RefreshCw, AlertCircle } from 'lucide-react';
 import {
   savePending,
   getPending,
@@ -28,6 +28,18 @@ interface Tagged {
   notes: string | null;
 }
 
+interface ProcessedPaths {
+  image_path: string;
+  image_nobg_path: string | null;
+  thumb_path: string;
+  nobg_url: string | null;
+  original_url: string;
+}
+
+// Per-step status for fine-grained UI feedback. These are independent —
+// tagging and bg removal run in parallel on the server.
+type StepStatus = 'idle' | 'running' | 'success' | 'failed';
+
 const CATEGORIES: Category[] = ['shirt', 'pants', 'shoes', 'purse', 'dress', 'outerwear', 'accessory'];
 const SEASONS = ['spring', 'summer', 'fall', 'winter'];
 
@@ -40,10 +52,12 @@ function NewItemInner() {
   const [resuming, setResuming] = useState(false);
 
   const [originalBlob, setOriginalBlob] = useState<Blob | null>(null);
-  const [originalUrl, setOriginalUrl] = useState<string | null>(null);
+  const [paths, setPaths] = useState<ProcessedPaths | null>(null);
 
-  const [processing, setProcessing] = useState<null | 'ai' | 'save'>(null);
-  const [aiDone, setAiDone] = useState(false);
+  // Independent status for each processing step so we can tell the user
+  // precisely what succeeded and what failed.
+  const [bgStatus, setBgStatus] = useState<StepStatus>('idle');
+  const [tagStatus, setTagStatus] = useState<StepStatus>('idle');
 
   const [meta, setMeta] = useState<
     Partial<Tagged> & {
@@ -56,9 +70,11 @@ function NewItemInner() {
     season_tags: [],
     colors: [],
   });
-  const [error, setError] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // ---- On mount, check for a resume query param ----
+  const processing = bgStatus === 'running' || tagStatus === 'running';
+
+  // ---- Resume support ----
   useEffect(() => {
     const resumeId = searchParams.get('pending');
     if (!resumeId) return;
@@ -67,16 +83,10 @@ function NewItemInner() {
       setResuming(true);
       try {
         const existing = await getPending(resumeId);
-        if (!existing) {
-          setResuming(false);
-          return;
-        }
+        if (!existing) return;
 
         setPendingId(existing.id);
-        if (existing.originalBlob) {
-          setOriginalBlob(existing.originalBlob);
-          setOriginalUrl(URL.createObjectURL(existing.originalBlob));
-        }
+        if (existing.originalBlob) setOriginalBlob(existing.originalBlob);
         setMeta({
           name: existing.meta.name ?? undefined,
           category: existing.meta.category as Category | undefined,
@@ -93,7 +103,12 @@ function NewItemInner() {
           favorite: existing.meta.favorite ?? false,
           acquired_from: existing.meta.acquired_from ?? undefined,
         });
-        if (existing.meta.category) setAiDone(true);
+        // Don't try to re-run processing — the photo already succeeded/failed
+        // on the previous session. The user can re-upload if they want.
+        if (existing.meta.category) {
+          setTagStatus('success');
+          setBgStatus(existing.nobgBlob ? 'success' : 'failed');
+        }
       } catch (e) {
         console.error('resume failed', e);
       } finally {
@@ -102,12 +117,10 @@ function NewItemInner() {
     })();
   }, [searchParams]);
 
-  // Persist to pending store whenever meta changes (debounced 400ms)
+  // Persist metadata edits to IndexedDB (debounced)
   useEffect(() => {
     if (!pendingId || !originalBlob) return;
-    const handle = setTimeout(() => {
-      persistPending();
-    }, 400);
+    const handle = setTimeout(() => persistPending(), 400);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meta]);
@@ -115,11 +128,17 @@ function NewItemInner() {
   async function persistPending(overrides?: Partial<PendingItem>) {
     if (!pendingId || !originalBlob) return;
     try {
+      const overallStatus: PendingItem['status'] =
+        bgStatus === 'success' && tagStatus === 'success'
+          ? 'ready'
+          : bgStatus === 'running' || tagStatus === 'running'
+          ? 'processing'
+          : 'partial';
       await savePending({
         id: pendingId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        status: aiDone ? 'ready' : 'partial',
+        status: overallStatus,
         originalBlob,
         nobgBlob: null,
         meta: {
@@ -146,15 +165,16 @@ function NewItemInner() {
   }
 
   async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    setError(null);
+    setErrorMsg(null);
     const file = e.target.files?.[0];
     if (!file) return;
 
     const newId = newPendingId();
     setPendingId(newId);
     setOriginalBlob(file);
-    setOriginalUrl(URL.createObjectURL(file));
-    setAiDone(false);
+    setTagStatus('idle');
+    setBgStatus('idle');
+    setPaths(null);
 
     try {
       await savePending({
@@ -170,59 +190,114 @@ function NewItemInner() {
       console.warn('could not save pending', e);
     }
 
-    runTagging(file);
+    runProcessing(file);
   }
 
-  async function runTagging(file: Blob) {
-    setProcessing('ai');
+  async function runProcessing(file: Blob) {
+    setTagStatus('running');
+    setBgStatus('running');
+    setErrorMsg(null);
+
     try {
       const form = new FormData();
-      form.append('image', file);
-      const res = await fetch('/api/ai/tag-item', { method: 'POST', body: form });
+      form.append('photo', file);
+      const res = await fetch('/api/items/process', { method: 'POST', body: form });
+
       if (!res.ok) {
         const body = await res.json().catch(() => null);
-        throw new Error(body?.detail || body?.error || `AI tagging failed (${res.status})`);
+        throw new Error(body?.detail || body?.error || `Processing failed (${res.status})`);
       }
+
       const json = await res.json();
-      const t: Tagged = json.tagged;
-      setMeta((m) => ({
-        ...m,
-        category: t.category,
-        sub_category: t.sub_category,
-        colors: t.colors ?? [],
-        brand: t.brand_guess ?? m.brand,
-        material: t.material ?? m.material,
-        pattern: t.pattern ?? m.pattern,
-        style_tags: t.style_tags ?? [],
-        season_tags: t.season_tags ?? [],
-        warmth_score: t.warmth_score,
-        formality_score: t.formality_score,
-        name: t.name,
-        notes: t.notes,
-      }));
-      setAiDone(true);
+
+      // Preload the bg-removed image so it's already cached and decoded
+      // when we update state. Without this, the UI flips status pills to
+      // ✓ Background while the <img> still shows the original photo for
+      // a moment, until the new src loads.
+      const nobgUrl: string | null = json.urls.nobg;
+      if (nobgUrl) {
+        await preloadImage(nobgUrl).catch(() => {});
+      }
+
+      setPaths({
+        image_path: json.paths.original,
+        image_nobg_path: json.paths.nobg,
+        thumb_path: json.paths.thumb,
+        nobg_url: nobgUrl,
+        original_url: json.urls.original,
+      });
+
+      // Tagging result
+      const t: Tagged | null = json.tagged;
+      if (t) {
+        setMeta((m) => ({
+          ...m,
+          category: t.category,
+          sub_category: t.sub_category,
+          colors: t.colors ?? [],
+          brand: t.brand_guess ?? m.brand,
+          material: t.material ?? m.material,
+          pattern: t.pattern ?? m.pattern,
+          style_tags: t.style_tags ?? [],
+          season_tags: t.season_tags ?? [],
+          warmth_score: t.warmth_score,
+          formality_score: t.formality_score,
+          name: t.name,
+          notes: t.notes,
+        }));
+        setTagStatus('success');
+      } else {
+        setTagStatus('failed');
+      }
+
+      // Bg removal result
+      setBgStatus(json.nobg_succeeded ? 'success' : 'failed');
     } catch (e: any) {
       console.error(e);
-      setError(e.message || 'Auto-tagging failed. You can fill in details manually.');
-      setAiDone(true); // unblock the UI so user can save
-    } finally {
-      setProcessing((p) => (p === 'ai' ? null : p));
+      // Total failure — both steps couldn't even start
+      setErrorMsg(e.message || 'Processing failed. You can fill in details manually or try another photo.');
+      setTagStatus('failed');
+      setBgStatus('failed');
     }
+  }
+
+  // Retry just the bg-removal step — re-uploads the original blob and asks
+  // the server to process again. If tagging already succeeded we keep those
+  // results; if not, the retry will try both steps again.
+  async function retryBgRemoval() {
+    if (!originalBlob) return;
+    // We also re-run tagging since the endpoint does both — cheap enough
+    runProcessing(originalBlob);
+  }
+
+  /**
+   * Preload an image so it's decoded and ready to render before we update
+   * state — eliminates the flicker where status flips to ✓ but the <img>
+   * still shows the old photo for a moment.
+   */
+  function preloadImage(src: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error(`failed to preload ${src}`));
+      img.src = src;
+    });
   }
 
   async function save() {
-    if (!originalBlob || !meta.category) {
-      setError('Need a photo and a category.');
+    if (!paths || !meta.category) {
+      setErrorMsg('You need a category selected before saving.');
       return;
     }
-    setProcessing('save');
-    setError(null);
+    setErrorMsg(null);
     try {
-      const form = new FormData();
-      form.append('original', originalBlob, 'original.jpg');
-      form.append(
-        'meta',
-        JSON.stringify({
+      const res = await fetch('/api/items', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          image_path: paths.image_path,
+          image_nobg_path: paths.image_nobg_path,
+          thumb_path: paths.thumb_path,
           category: meta.category,
           sub_category: meta.sub_category ?? null,
           name: meta.name ?? null,
@@ -237,14 +312,12 @@ function NewItemInner() {
           favorite: !!meta.favorite,
           notes: meta.notes ?? null,
           acquired_from: meta.acquired_from ?? null,
-        })
-      );
-      const res = await fetch('/api/items', { method: 'POST', body: form });
+        }),
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.detail || body?.error || `Save failed (${res.status})`);
       }
-
       if (pendingId) {
         try {
           await deletePending(pendingId);
@@ -254,13 +327,12 @@ function NewItemInner() {
       }
       router.push('/closet');
     } catch (e: any) {
-      setError(e.message || 'Save failed. Try again.');
-      setProcessing(null);
+      setErrorMsg(e.message || 'Save failed. Try again.');
     }
   }
 
   async function discard() {
-    if (!confirm('Discard this upload? It will be gone for good.')) return;
+    if (!confirm('Discard this upload?')) return;
     if (pendingId) {
       try {
         await deletePending(pendingId);
@@ -277,7 +349,33 @@ function NewItemInner() {
     setMeta({ ...meta, [field]: next });
   }
 
-  const aiSpinning = processing === 'ai' || (originalBlob && !aiDone);
+  // Manage the blob URL for the local preview (shown before the server's
+  // bg-removed image is ready). useMemo+useEffect-cleanup ensures we revoke
+  // the previous URL before creating a new one — otherwise re-renders would
+  // leak blob URLs (each one pins its Blob in memory).
+  const localBlobUrl = useMemo(() => {
+    if (!originalBlob) return null;
+    return URL.createObjectURL(originalBlob);
+  }, [originalBlob]);
+
+  useEffect(() => {
+    if (!localBlobUrl) return;
+    return () => {
+      URL.revokeObjectURL(localBlobUrl);
+    };
+  }, [localBlobUrl]);
+
+  // The image to show: prefer the bg-removed version; fall back to original
+  // server URL, and finally the local blob URL while processing is in flight.
+  const previewSrc = paths?.nobg_url ?? paths?.original_url ?? localBlobUrl;
+
+  // Processing can "complete" with mixed results — at least one step succeeded
+  // enough that the user can proceed to edit/save, even if bg removal failed
+  const canEdit =
+    tagStatus !== 'running' &&
+    bgStatus !== 'running' &&
+    !!paths &&
+    tagStatus !== 'idle';
 
   return (
     <div className="px-6 py-8 pb-24 max-w-3xl mx-auto">
@@ -309,7 +407,7 @@ function NewItemInner() {
             style={{ borderRadius: '4px' }}
           >
             <div className="wordmark italic text-2xl text-pink-500 mb-1">Choose a photo</div>
-            <div className="text-xs text-ink-400 tracking-wide">JPG, PNG, HEIC, AVIF…</div>
+            <div className="text-xs text-ink-400 tracking-wide">JPG, PNG, HEIC, AVIF — drop or tap</div>
           </button>
           <input
             ref={fileRef}
@@ -318,33 +416,79 @@ function NewItemInner() {
             className="hidden"
             onChange={onFileChange}
           />
-          {error && <p className="mt-4 text-sm text-pink-700">{error}</p>}
+          {errorMsg && (
+            <div className="mt-4 card-pink p-3 flex items-start gap-2 text-sm text-ink-800">
+              <AlertCircle className="w-4 h-4 text-pink-700 flex-shrink-0 mt-0.5" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
         </div>
       ) : (
         <div className="grid md:grid-cols-2 gap-8">
           <div className="space-y-3">
-            <div className="card aspect-square bg-pink-50 overflow-hidden">
-              {originalUrl && (
+            <div className="card aspect-square bg-pink-50 overflow-hidden relative">
+              {previewSrc && (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={originalUrl} alt="" className="w-full h-full object-contain" />
+                <img src={previewSrc} alt="" className="w-full h-full object-contain" />
+              )}
+              {processing && (
+                <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-[1px]">
+                  <div className="text-center">
+                    <div className="text-pink-700 wordmark italic text-lg animate-pulse mb-1">
+                      Processing…
+                    </div>
+                    <div className="text-[10px] uppercase tracking-[0.15em] text-ink-500">
+                      Usually takes 5–10 seconds
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
-            <div className="flex gap-2 text-[10px] uppercase tracking-[0.15em] text-ink-400">
-              <div className={aiDone ? 'text-pink-700' : 'text-ink-400'}>
-                {aiDone ? '✓' : '•'} Auto-tagged
-              </div>
-              <span>·</span>
-              <div className="text-ink-400">
-                • Background removed on save
-              </div>
+
+            {/* Step status pills — shows precisely what succeeded and what failed */}
+            <div className="flex gap-2 flex-wrap text-[10px] uppercase tracking-[0.15em]">
+              <StepPill label="Background" status={bgStatus} />
+              <StepPill label="Auto-tag" status={tagStatus} />
             </div>
+
+            {/* If bg removal failed, offer a retry — tagging too since they
+                share the endpoint */}
+            {bgStatus === 'failed' && tagStatus !== 'running' && (
+              <button
+                onClick={retryBgRemoval}
+                className="w-full text-xs uppercase tracking-[0.12em] py-2 px-3 border border-pink-300 text-pink-700 hover:bg-pink-50 flex items-center justify-center gap-1.5 transition-colors"
+                style={{ borderRadius: '2px' }}
+              >
+                <RefreshCw className="w-3 h-3" />
+                Retry background removal
+              </button>
+            )}
           </div>
 
           <div className="space-y-5">
-            {aiSpinning ? (
-              <div className="text-sm text-ink-400">Reading your piece…</div>
-            ) : (
+            {processing ? (
+              <div className="space-y-3">
+                <div className="text-sm text-ink-600">
+                  Running AI analysis and removing the background at the same time.
+                </div>
+                <ProcessingProgress bg={bgStatus} tag={tagStatus} />
+              </div>
+            ) : canEdit ? (
               <>
+                {(tagStatus === 'failed' || bgStatus === 'failed') && (
+                  <div className="card-pink p-3 text-xs text-ink-800">
+                    {tagStatus === 'failed' && bgStatus === 'failed' && (
+                      <>Both auto-tagging and background removal failed. You can fill in details manually or retry.</>
+                    )}
+                    {tagStatus === 'failed' && bgStatus === 'success' && (
+                      <>Background removed, but auto-tagging failed. Fill in the details below manually.</>
+                    )}
+                    {tagStatus === 'success' && bgStatus === 'failed' && (
+                      <>Tagged successfully, but background removal didn't work — the original photo will be used instead. You can retry.</>
+                    )}
+                  </div>
+                )}
+
                 <div>
                   <label className="label block mb-2">Name</label>
                   <input
@@ -435,10 +579,10 @@ function NewItemInner() {
                 <div className="pt-2 flex gap-3">
                   <button
                     onClick={save}
-                    disabled={processing === 'save' || !meta.category}
+                    disabled={!paths || !meta.category}
                     className="btn flex-1 disabled:opacity-50"
                   >
-                    {processing === 'save' ? 'Saving…' : 'Save to closet'}
+                    Save to closet
                   </button>
                   <button
                     onClick={discard}
@@ -449,16 +593,90 @@ function NewItemInner() {
                   </button>
                 </div>
 
-                {error && <p className="text-sm text-pink-700">{error}</p>}
+                {errorMsg && (
+                  <div className="card-pink p-3 flex items-start gap-2 text-sm text-ink-800">
+                    <AlertCircle className="w-4 h-4 text-pink-700 flex-shrink-0 mt-0.5" />
+                    <span>{errorMsg}</span>
+                  </div>
+                )}
 
                 <p className="text-[10px] uppercase tracking-[0.2em] text-ink-400 pt-2">
                   Auto-saves as you work — safe to leave and come back
                 </p>
               </>
+            ) : (
+              <div className="text-sm text-ink-400">Getting ready…</div>
             )}
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Pill that shows the state of one processing step.
+ * Designed to be at-a-glance scannable: a dot + label + status glyph.
+ */
+function StepPill({ label, status }: { label: string; status: StepStatus }) {
+  const styles = {
+    idle: 'bg-pink-50 text-ink-400 border-pink-100',
+    running: 'bg-pink-100 text-pink-700 border-pink-200',
+    success: 'bg-pink-500 text-white border-pink-500',
+    failed: 'bg-transparent text-pink-700 border-pink-300',
+  }[status];
+
+  const glyph = {
+    idle: '·',
+    running: '…',
+    success: '✓',
+    failed: '⚠',
+  }[status];
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 border ${styles}`}
+      style={{ borderRadius: '2px' }}
+    >
+      <span className={status === 'running' ? 'animate-pulse' : ''}>{glyph}</span>
+      <span>{label}</span>
+    </span>
+  );
+}
+
+/**
+ * Animated progress indicator — shows which steps are running, finished, or
+ * failed. Gives the user a sense of concrete progress while they wait.
+ */
+function ProcessingProgress({ bg, tag }: { bg: StepStatus; tag: StepStatus }) {
+  return (
+    <div className="space-y-2 text-xs text-ink-600">
+      <ProgressLine label="Analyzing with AI" status={tag} />
+      <ProgressLine label="Removing background" status={bg} />
+    </div>
+  );
+}
+
+function ProgressLine({ label, status }: { label: string; status: StepStatus }) {
+  const icon =
+    status === 'running' ? (
+      <span className="inline-block w-1.5 h-1.5 rounded-full bg-pink-500 animate-pulse" />
+    ) : status === 'success' ? (
+      <span className="inline-block w-1.5 h-1.5 rounded-full bg-pink-500" />
+    ) : status === 'failed' ? (
+      <span className="inline-block w-1.5 h-1.5 rounded-full bg-pink-300" />
+    ) : (
+      <span className="inline-block w-1.5 h-1.5 rounded-full bg-pink-100" />
+    );
+  return (
+    <div className="flex items-center gap-2">
+      {icon}
+      <span className={status === 'idle' ? 'text-ink-400' : ''}>{label}</span>
+      <span className="text-[10px] uppercase tracking-[0.15em] text-ink-400 ml-auto">
+        {status === 'running' && 'in progress…'}
+        {status === 'success' && 'done'}
+        {status === 'failed' && 'failed'}
+      </span>
     </div>
   );
 }

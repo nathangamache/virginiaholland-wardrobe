@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState, use } from 'react';
+import { useEffect, useRef, useState, use } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, X, Check } from 'lucide-react';
+import { Plus, X, Check, Camera } from 'lucide-react';
 
 const STYLE_TAG_SUGGESTIONS = [
   'casual', 'minimalist', 'classic', 'elevated', 'edgy',
@@ -10,13 +10,28 @@ const STYLE_TAG_SUGGESTIONS = [
   'loungewear', 'formal', 'workwear',
 ];
 
+type Category = 'shirt' | 'pants' | 'shoes' | 'purse' | 'dress' | 'outerwear' | 'accessory';
+const CATEGORIES: Category[] = [
+  'shirt', 'pants', 'shoes', 'purse', 'dress', 'outerwear', 'accessory',
+];
+
 export default function ItemDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const photoFileRef = useRef<HTMLInputElement>(null);
   const [item, setItem] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saved' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Photo replacement state — separate from metadata save state because the
+  // user might want to replace the photo independently of editing tags.
+  const [replacingPhoto, setReplacingPhoto] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  // Cache-bust query param that flips after a photo replace, so the new image
+  // shows immediately instead of being served from the browser's old cache
+  // for the same /api/images URL.
+  const [photoVersion, setPhotoVersion] = useState(0);
 
   useEffect(() => {
     fetch(`/api/items/${id}`)
@@ -33,6 +48,7 @@ export default function ItemDetailPage({ params }: { params: Promise<{ id: strin
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          category: item.category,
           name: item.name,
           brand: item.brand,
           sub_category: item.sub_category,
@@ -68,6 +84,77 @@ export default function ItemDetailPage({ params }: { params: Promise<{ id: strin
     router.push('/closet');
   }
 
+  /**
+   * Replace the photo. Uploads the file, server re-runs bg removal, swaps
+   * stored images, and we update local state so the new image shows.
+   */
+  async function replacePhoto(file: File) {
+    setReplacingPhoto(true);
+    setPhotoError(null);
+    try {
+      const form = new FormData();
+      form.append('photo', file);
+      const res = await fetch(`/api/items/${id}/photo`, {
+        method: 'PATCH',
+        body: form,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail || body?.error || `Upload failed (${res.status})`);
+      }
+      const json = await res.json();
+
+      // Preload the new image before we swap it in. Without this, the
+      // "Replacing photo…" overlay disappears but the <img> still briefly
+      // shows the old photo while the new one is loading from the server.
+      const newImageUrl: string | null =
+        json.urls.nobg ?? json.urls.original ?? null;
+      if (newImageUrl) {
+        await preloadImage(newImageUrl).catch(() => {});
+      }
+
+      setItem({
+        ...item,
+        image_path: json.paths.original,
+        image_nobg_path: json.paths.nobg,
+        thumb_path: json.paths.thumb,
+      });
+      // Cache-bust so the browser fetches the new image even though we may
+      // technically have a different URL anyway (paths regenerate per upload).
+      setPhotoVersion((v) => v + 1);
+      if (!json.nobg_succeeded) {
+        setPhotoError(
+          'Photo replaced, but background removal failed. The original photo is being used.'
+        );
+      }
+    } catch (e: any) {
+      setPhotoError(e?.message ?? 'Could not replace photo. Try again.');
+    } finally {
+      setReplacingPhoto(false);
+    }
+  }
+
+  function onPhotoFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    void replacePhoto(file);
+    // Reset the input so picking the same file twice in a row still triggers change
+    e.target.value = '';
+  }
+
+  /**
+   * Preload an image so it's decoded and cached before we update state,
+   * so the UI doesn't briefly show the old photo while the new one loads.
+   */
+  function preloadImage(src: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error(`failed to preload ${src}`));
+      img.src = src;
+    });
+  }
+
   if (!item) return <div className="px-6 py-8 text-ink-400">Loading…</div>;
 
   const imgSrc = item.image_nobg_path ?? item.image_path;
@@ -83,17 +170,63 @@ export default function ItemDetailPage({ params }: { params: Promise<{ id: strin
           <X className="w-5 h-5" strokeWidth={1.5} />
         </button>
       </div>
-      <div className="card aspect-square mb-6 bg-pink-50 overflow-hidden">
+      <div className="card aspect-square mb-3 bg-pink-50 overflow-hidden relative group">
         {imgSrc && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={`/api/images/${imgSrc}`} alt={item.name ?? ''} className="w-full h-full object-contain" />
+          <img
+            src={`/api/images/${imgSrc}${photoVersion ? `?v=${photoVersion}` : ''}`}
+            alt={item.name ?? ''}
+            className="w-full h-full object-contain"
+          />
+        )}
+
+        {/* Replace photo button — overlays the image; tap-friendly on mobile,
+            shows on hover on desktop */}
+        {!replacingPhoto && (
+          <button
+            onClick={() => photoFileRef.current?.click()}
+            className="absolute bottom-3 right-3 inline-flex items-center gap-1.5 px-3 py-2 bg-white/90 backdrop-blur-sm text-ink-800 hover:bg-white text-[10px] uppercase tracking-[0.15em] shadow-sm transition-all [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+            style={{ borderRadius: '2px' }}
+          >
+            <Camera className="w-3 h-3" />
+            Replace
+          </button>
+        )}
+
+        {/* Processing overlay */}
+        {replacingPhoto && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white/60 backdrop-blur-[1px]">
+            <div className="text-center">
+              <div className="text-pink-700 wordmark italic text-lg animate-pulse mb-1">
+                Replacing photo…
+              </div>
+              <div className="text-[10px] uppercase tracking-[0.15em] text-ink-500">
+                Removing background
+              </div>
+            </div>
+          </div>
         )}
       </div>
 
-      <div className="space-y-5">
-        {/* Name / category */}
+      {/* Hidden file input for photo replacement */}
+      <input
+        ref={photoFileRef}
+        type="file"
+        accept="image/*,.heic,.heif,.avif,.tiff,.tif"
+        className="hidden"
+        onChange={onPhotoFileChange}
+      />
+
+      {/* Photo replacement error/warning */}
+      {photoError && (
+        <div className="card-pink p-3 mb-3 text-xs text-ink-800">
+          {photoError}
+        </div>
+      )}
+
+      <div className="space-y-5 mt-3">
+        {/* Name */}
         <div>
-          <div className="eyebrow mb-1">{item.category}</div>
           <input
             value={item.name ?? ''}
             onChange={(e) => setItem({ ...item, name: e.target.value })}
@@ -101,6 +234,27 @@ export default function ItemDetailPage({ params }: { params: Promise<{ id: strin
             placeholder="Name…"
           />
         </div>
+
+        {/* Category — editable so a mistagged item can be reassigned */}
+        <Field label="Category">
+          <div className="flex flex-wrap gap-2">
+            {CATEGORIES.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setItem({ ...item, category: c })}
+                className={`px-3.5 py-1.5 text-xs uppercase tracking-[0.12em] border transition-all ${
+                  item.category === c
+                    ? 'bg-pink-500 text-white border-pink-500'
+                    : 'border-pink-200 text-ink-600 hover:border-pink-400'
+                }`}
+                style={{ borderRadius: '2px' }}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+        </Field>
 
         <div className="grid grid-cols-2 gap-4">
           <Field label="Brand">

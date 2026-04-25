@@ -2,11 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireSession } from '@/lib/auth';
 import { query, queryOne } from '@/lib/db';
-import { saveBuffer } from '@/lib/storage';
-import { processJpeg, processPng } from '@/lib/image';
-import { removeBackground } from '@/lib/bg-removal-server';
-import { bgRemovalPool, imageProcessingPool } from '@/lib/work-queue';
-import { ApiError, routeHandler, badInput } from '@/lib/api-error';
+import { ApiError, routeHandler } from '@/lib/api-error';
 
 // ---- GET /api/items -------------------------------------------------
 export const GET = routeHandler(async (req: NextRequest) => {
@@ -53,31 +49,35 @@ export const GET = routeHandler(async (req: NextRequest) => {
 
 // ---- POST /api/items ------------------------------------------------
 //
-// Accepts an `original` image file (any format sharp can decode — JPEG, PNG,
-// HEIC, WebP, TIFF, GIF) and `meta` JSON. Server does everything:
-//   - normalize original to JPEG
-//   - run ISNet background removal → save nobg PNG
-//   - generate 480px square thumbnail from nobg on cream background
+// Accepts already-processed image paths from /api/items/process plus the
+// item metadata. No image processing happens here — just the DB insert.
 //
-// Client no longer ships a nobg blob. No more 80MB model download in Virginia's
-// browser. No 30-60s wait on her phone.
+// This split means:
+//   - Upload step does the heavy work (tagging + bg removal in parallel)
+//   - User reviews the result with the bg-removed image already shown
+//   - Save is just a DB insert (~10ms)
 //
-const metaSchema = z.object({
+const saveSchema = z.object({
+  // Paths returned by /api/items/process
+  image_path: z.string().min(1),
+  image_nobg_path: z.string().nullable().optional(),
+  thumb_path: z.string().min(1),
+  // Item metadata
   category: z.enum(['shirt', 'pants', 'shoes', 'purse', 'dress', 'outerwear', 'accessory']),
-  sub_category: z.string().optional().nullable(),
-  name: z.string().optional().nullable(),
-  brand: z.string().optional().nullable(),
-  material: z.string().optional().nullable(),
-  pattern: z.string().optional().nullable(),
+  sub_category: z.string().nullable().optional(),
+  name: z.string().nullable().optional(),
+  brand: z.string().nullable().optional(),
+  material: z.string().nullable().optional(),
+  pattern: z.string().nullable().optional(),
   colors: z.array(z.string()).default([]),
   style_tags: z.array(z.string()).default([]),
   season_tags: z.array(z.string()).default([]),
-  warmth_score: z.number().int().min(1).max(5).optional().nullable(),
-  formality_score: z.number().int().min(1).max(5).optional().nullable(),
+  warmth_score: z.number().int().min(1).max(5).nullable().optional(),
+  formality_score: z.number().int().min(1).max(5).nullable().optional(),
   favorite: z.boolean().optional().default(false),
-  notes: z.string().optional().nullable(),
-  acquired_from: z.string().optional().nullable(),
-  purchase_price: z.number().optional().nullable(),
+  notes: z.string().nullable().optional(),
+  acquired_from: z.string().nullable().optional(),
+  purchase_price: z.number().nullable().optional(),
 });
 
 export const POST = routeHandler(async (req: NextRequest) => {
@@ -87,71 +87,18 @@ export const POST = routeHandler(async (req: NextRequest) => {
     throw new ApiError(401, 'Not signed in', 'Authentication required.', 'UNAUTHORIZED');
   }
 
-  let form: FormData;
-  try {
-    form = await req.formData();
-  } catch {
-    throw badInput('Could not parse upload form.');
+  const body = await req.json().catch(() => null);
+  if (!body) {
+    throw new ApiError(400, 'Invalid JSON', 'Request body could not be parsed as JSON.', 'BAD_INPUT');
   }
 
-  const original = form.get('original') as File | null;
-  const metaRaw = form.get('meta');
-  if (!original) throw badInput('Missing photo.');
-  if (!metaRaw) throw badInput('Missing metadata.');
-
-  let meta: z.infer<typeof metaSchema>;
-  try {
-    meta = metaSchema.parse(JSON.parse(metaRaw.toString()));
-  } catch (e: any) {
-    throw badInput(`Invalid metadata: ${e.message}`);
+  const parsed = saveSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new ApiError(400, 'Invalid input', parsed.error.message, 'BAD_INPUT');
   }
+  const d = parsed.data;
 
-  const originalBuf = Buffer.from(await original.arrayBuffer());
-
-  // Normalize → JPEG
-  let normalized: { buffer: Buffer; width: number; height: number };
-  try {
-    normalized = await imageProcessingPool.run(() =>
-      processJpeg(originalBuf, { maxW: 2000, maxH: 2000, quality: 88 })
-    );
-  } catch (e: any) {
-    throw new ApiError(
-      400,
-      'Could not process the uploaded photo',
-      e.message || 'Unknown image error',
-      'IMAGE_PROCESSING_FAILED',
-      { fileName: original.name, fileSize: original.size }
-    );
-  }
-  const originalPath = await saveBuffer('items', normalized.buffer, 'jpg');
-
-  const occupiesSlots: string[] = meta.category === 'dress' ? ['shirt', 'pants'] : [];
-
-  // Background removal — non-fatal. If it fails we save without the nobg image.
-  let nobgPath: string | null = null;
-  let nobgBuf: Buffer | null = null;
-  try {
-    nobgBuf = await bgRemovalPool.run(() => removeBackground(originalBuf));
-    const processedNobg = await imageProcessingPool.run(() =>
-      processPng(nobgBuf!, { maxW: 1600, maxH: 1600 })
-    );
-    nobgPath = await saveBuffer('items-nobg', processedNobg.buffer, 'png');
-  } catch (e: any) {
-    console.warn('[items] bg removal failed, saving without it:', e.message);
-  }
-
-  // Thumbnail — prefer nobg (flattened onto cream) for a clean grid aesthetic
-  const sourceForThumb = nobgBuf ?? normalized.buffer;
-  const thumb = await imageProcessingPool.run(() =>
-    processJpeg(sourceForThumb, {
-      maxW: 480,
-      maxH: 480,
-      quality: 84,
-      flattenBg: { r: 253, g: 251, b: 247 },
-      square: true,
-    })
-  );
-  const thumbPath = await saveBuffer('thumbs', thumb.buffer, 'jpg');
+  const occupiesSlots: string[] = d.category === 'dress' ? ['shirt', 'pants'] : [];
 
   const row = await queryOne<{ id: string }>(
     `INSERT INTO items (
@@ -164,34 +111,30 @@ export const POST = routeHandler(async (req: NextRequest) => {
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
      ) RETURNING id`,
     [
-      meta.category,
-      meta.sub_category ?? null,
+      d.category,
+      d.sub_category ?? null,
       occupiesSlots,
-      originalPath,
-      nobgPath,
-      thumbPath,
-      meta.name ?? null,
-      meta.brand ?? null,
-      meta.material ?? null,
-      meta.pattern ?? null,
-      meta.colors,
-      meta.style_tags,
-      meta.season_tags,
-      meta.warmth_score ?? null,
-      meta.formality_score ?? null,
-      meta.favorite ?? false,
-      meta.notes ?? null,
-      meta.acquired_from ?? null,
-      meta.purchase_price ?? null,
+      d.image_path,
+      d.image_nobg_path ?? null,
+      d.thumb_path,
+      d.name ?? null,
+      d.brand ?? null,
+      d.material ?? null,
+      d.pattern ?? null,
+      d.colors,
+      d.style_tags,
+      d.season_tags,
+      d.warmth_score ?? null,
+      d.formality_score ?? null,
+      d.favorite ?? false,
+      d.notes ?? null,
+      d.acquired_from ?? null,
+      d.purchase_price ?? null,
     ]
   );
 
-  return NextResponse.json({
-    id: row!.id,
-    nobg_succeeded: !!nobgPath,
-  });
+  return NextResponse.json({ id: row!.id });
 });
 
 export const runtime = 'nodejs';
-// BG removal 3-8s per image; give headroom
-export const maxDuration = 90;
+export const maxDuration = 30;

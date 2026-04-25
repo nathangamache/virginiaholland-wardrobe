@@ -4,12 +4,6 @@
  * Used so bulk uploads can process N items in parallel rather than
  * sequentially, without running 50 simultaneous bg-removal jobs that
  * would thrash the CPU.
- *
- * Usage:
- *   const pool = new Pool(4); // 4 concurrent jobs
- *   const results = await Promise.all(
- *     items.map(item => pool.run(() => processItem(item)))
- *   );
  */
 
 export class Pool {
@@ -21,7 +15,6 @@ export class Pool {
   }
 
   async run<T>(fn: () => Promise<T>): Promise<T> {
-    // Wait for a slot to open up
     if (this.running >= this.concurrency) {
       await new Promise<void>((resolve) => this.queue.push(resolve));
     }
@@ -45,20 +38,24 @@ export class Pool {
 }
 
 /**
- * Shared pool for background-removal jobs. Default concurrency is tuned for
- * an 8-core server; override with BG_REMOVAL_CONCURRENCY env var.
+ * Concurrency tuning for the Xeon E5-2687W v2 (8 cores / 16 threads).
  *
- * ONNX Runtime itself is single-threaded per InferenceSession by default,
- * so we can safely run several sessions in parallel on separate CPU cores.
+ * NOTE: Background removal manages its OWN concurrency internally via a
+ * session pool (see lib/bg-removal-server.ts). The bgRemovalPool here is
+ * kept for backward compatibility and any non-bg-removal CPU-bound tasks
+ * that want a similar limit.
+ *
+ * If you increase the bg-removal session pool size (BG_REMOVAL_SESSION_POOL),
+ * you don't need to change this value — they're independent.
  */
 export const bgRemovalPool = new Pool(
-  parseInt(process.env.BG_REMOVAL_CONCURRENCY ?? '4', 10)
+  parseInt(process.env.BG_REMOVAL_CONCURRENCY ?? '6', 10)
 );
 
 /**
- * Pool for lighter image processing (thumbnails, normalization) — can run
- * more in parallel since each operation is cheap.
+ * Image processing pool — sharp ops are cheap (50-200ms each) so we can
+ * run many in parallel without much CPU contention.
  */
 export const imageProcessingPool = new Pool(
-  parseInt(process.env.IMAGE_PROCESSING_CONCURRENCY ?? '8', 10)
+  parseInt(process.env.IMAGE_PROCESSING_CONCURRENCY ?? '12', 10)
 );
