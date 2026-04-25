@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { Plus, X, Check, Camera } from 'lucide-react';
+import { useDialog } from '@/components/DialogProvider';
 
 const STYLE_TAG_SUGGESTIONS = [
   'casual', 'minimalist', 'classic', 'elevated', 'edgy',
@@ -18,6 +19,7 @@ const CATEGORIES: Category[] = [
 export default function ItemDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const { confirm } = useDialog();
   const photoFileRef = useRef<HTMLInputElement>(null);
   const [item, setItem] = useState<any>(null);
   const [saving, setSaving] = useState(false);
@@ -79,7 +81,13 @@ export default function ItemDetailPage({ params }: { params: Promise<{ id: strin
   }
 
   async function remove() {
-    if (!confirm('Remove this piece from your closet?')) return;
+    const ok = await confirm({
+      title: 'Remove this piece?',
+      body: 'It will be deleted from your closet permanently. This cannot be undone.',
+      confirmLabel: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
     await fetch(`/api/items/${id}`, { method: 'DELETE' });
     router.push('/closet');
   }

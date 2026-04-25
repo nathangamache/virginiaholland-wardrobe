@@ -50,11 +50,13 @@ export async function POST(req: NextRequest) {
 
   let forecast: any = null;
   let generated: any = null;
+  let generationError: string | null = null;
   try {
     const full = await getForecast(t.destination_lat, t.destination_lon, Math.min(daysBetween + 2, 16));
     forecast = full.filter((d) => d.date >= t.start_date && d.date <= t.end_date);
-  } catch (e) {
-    console.error('forecast fetch failed', e);
+  } catch (e: any) {
+    console.error('[trips/POST] forecast fetch failed', e);
+    generationError = `Weather forecast unavailable: ${e?.message ?? 'unknown'}`;
   }
 
   if (t.generate && forecast?.length) {
@@ -64,21 +66,28 @@ export async function POST(req: NextRequest) {
        FROM items`,
       []
     );
-    try {
-      generated = await planPacking(JSON.stringify(items), {
-        destination: t.destination,
-        days: forecast.map((d: any) => ({
-          date: d.date,
-          temp_min_f: d.temp_min_f,
-          temp_max_f: d.temp_max_f,
-          summary: d.summary,
-          precip_chance: d.precip_chance,
-        })),
-        occasions: t.occasions,
-      });
-    } catch (e) {
-      console.error('packing plan failed', e);
+    if (items.length === 0) {
+      generationError = 'No items in closet yet — add pieces first, then generate a plan.';
+    } else {
+      try {
+        generated = await planPacking(JSON.stringify(items), {
+          destination: t.destination,
+          days: forecast.map((d: any) => ({
+            date: d.date,
+            temp_min_f: d.temp_min_f,
+            temp_max_f: d.temp_max_f,
+            summary: d.summary,
+            precip_chance: d.precip_chance,
+          })),
+          occasions: t.occasions,
+        });
+      } catch (e: any) {
+        console.error('[trips/POST] packing plan failed', e);
+        generationError = `AI planning failed: ${e?.message ?? 'unknown'}`;
+      }
     }
+  } else if (t.generate && !forecast?.length) {
+    generationError = generationError ?? 'No forecast for the trip dates.';
   }
 
   const row = await queryOne<{ id: string }>(
@@ -102,7 +111,7 @@ export async function POST(req: NextRequest) {
     ]
   );
 
-  return NextResponse.json({ id: row!.id, generated });
+  return NextResponse.json({ id: row!.id, generated, generation_error: generationError });
 }
 
 export const runtime = 'nodejs';

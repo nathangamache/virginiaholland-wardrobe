@@ -4,8 +4,8 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { Plus, Layers, ArrowRight } from 'lucide-react';
 import { ItemCard } from '@/components/ItemCard';
-import { listPending, deletePending } from '@/lib/pending-store';
-import type { PendingItem } from '@/lib/pending-store';
+import { listPending, deletePending, type PendingItem } from '@/lib/pending-store';
+import { useDialog } from '@/components/DialogProvider';
 
 const CATEGORIES = [
   { key: 'all', label: 'All' },
@@ -19,6 +19,7 @@ const CATEGORIES = [
 ];
 
 export default function ClosetPage() {
+  const { confirm } = useDialog();
   const [items, setItems] = useState<any[]>([]);
   const [cat, setCat] = useState('all');
   const [q, setQ] = useState('');
@@ -46,7 +47,13 @@ export default function ClosetPage() {
   }
 
   async function discardPending(id: string) {
-    if (!confirm('Discard this in-progress upload?')) return;
+    const ok = await confirm({
+      title: 'Discard this upload?',
+      body: 'The in-progress photo and tags will be lost.',
+      confirmLabel: 'Discard',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await deletePending(id);
       await loadPending();
@@ -162,7 +169,7 @@ function PendingCard({ item, onDiscard }: { item: PendingItem; onDiscard: () => 
     item.status === 'ready'
       ? 'Ready to save'
       : item.status === 'partial'
-      ? 'Almost ready'
+      ? 'Finish setup'
       : 'Processing…';
 
   return (
@@ -174,8 +181,17 @@ function PendingCard({ item, onDiscard }: { item: PendingItem; onDiscard: () => 
             <img src={url} alt="" className="w-full h-full object-contain" />
           )}
           {item.status === 'processing' && (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="w-2 h-2 rounded-full bg-pink-500 animate-pulse" />
+            <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-[1px]">
+              <div className="flex gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-pulse" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-pulse" style={{ animationDelay: '200ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-pulse" style={{ animationDelay: '400ms' }} />
+              </div>
+            </div>
+          )}
+          {item.status === 'ready' && (
+            <div className="absolute top-2 left-2 w-5 h-5 rounded-full bg-pink-500 flex items-center justify-center">
+              <span className="text-[10px] text-white">✓</span>
             </div>
           )}
         </div>

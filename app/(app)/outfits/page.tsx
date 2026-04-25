@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { Plus, Pencil } from 'lucide-react';
 import { format } from 'date-fns';
 import { ItemCard } from '@/components/ItemCard';
 
@@ -47,9 +48,15 @@ export default function OutfitsPage() {
 
   return (
     <div className="px-6 py-8 max-w-5xl mx-auto">
-      <div className="mb-8">
-        <div className="eyebrow mb-1">Outfits worn</div>
-        <h1 className="wordmark italic text-5xl leading-none text-ink-900">History</h1>
+      <div className="flex items-baseline justify-between mb-8">
+        <div>
+          <div className="eyebrow mb-1">Outfits worn</div>
+          <h1 className="wordmark italic text-5xl leading-none text-ink-900">History</h1>
+        </div>
+        <Link href="/outfits/new" className="btn">
+          <Plus className="w-4 h-4" />
+          Build outfit
+        </Link>
       </div>
 
       {loading ? (
@@ -57,9 +64,15 @@ export default function OutfitsPage() {
       ) : wears.length === 0 ? (
         <div className="card p-10 text-center">
           <p className="text-sm text-ink-600 mb-4">
-            No outfits logged yet. Pick one on the Today tab.
+            No outfits logged yet. Pick one from today's recommendations or build your own.
           </p>
-          <Link href="/" className="btn">Today's picks</Link>
+          <div className="flex gap-2 justify-center">
+            <Link href="/" className="btn-ghost">Today's picks</Link>
+            <Link href="/outfits/new" className="btn">
+              <Plus className="w-4 h-4" />
+              Build outfit
+            </Link>
+          </div>
         </div>
       ) : (
         <div className="space-y-10">
@@ -69,11 +82,20 @@ export default function OutfitsPage() {
                 <div className="font-display text-xl">
                   {format(new Date(w.worn_on), 'MMMM d, yyyy')}
                 </div>
-                {w.weather_snapshot && (
-                  <div className="text-xs text-ink-400">
-                    {Math.round(w.weather_snapshot.temp_avg_f)}° · {w.weather_snapshot.summary}
-                  </div>
-                )}
+                <div className="flex items-center gap-3">
+                  {w.weather_snapshot && (
+                    <div className="text-xs text-ink-400">
+                      {Math.round(w.weather_snapshot.temp_avg_f)}° · {w.weather_snapshot.summary}
+                    </div>
+                  )}
+                  <Link
+                    href={`/outfits/${w.id}/edit`}
+                    className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.15em] text-pink-700 hover:text-pink-500"
+                  >
+                    <Pencil className="w-3 h-3" />
+                    Edit
+                  </Link>
+                </div>
               </div>
 
               {w.photo_path ? (

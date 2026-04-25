@@ -1,25 +1,30 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { format } from 'date-fns';
-import { Plus, MapPin } from 'lucide-react';
-import { ItemCard } from '@/components/ItemCard';
+import { Plus, MapPin, ArrowRight } from 'lucide-react';
+
+interface Trip {
+  id: string;
+  name: string;
+  destination: string;
+  start_date: string;
+  end_date: string;
+  selected_item_ids: string[] | null;
+  generated_outfits: { packing_notes?: string } | null;
+  notes: string | null;
+}
 
 export default function TripsPage() {
-  const [trips, setTrips] = useState<any[]>([]);
-  const [itemLookup, setItemLookup] = useState<Record<string, any>>({});
+  const [trips, setTrips] = useState<Trip[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
 
   async function load() {
-    const [t, i] = await Promise.all([
-      fetch('/api/trips').then((r) => r.json()),
-      fetch('/api/items').then((r) => r.json()),
-    ]);
-    setTrips(t.trips ?? []);
-    const lu: Record<string, any> = {};
-    for (const item of i.items ?? []) lu[item.id] = item;
-    setItemLookup(lu);
+    setLoading(true);
+    const res = await fetch('/api/trips').then((r) => r.json());
+    setTrips(res.trips ?? []);
     setLoading(false);
   }
 
@@ -47,59 +52,34 @@ export default function TripsPage() {
           <button onClick={() => setShowNew(true)} className="btn">Plan a trip</button>
         </div>
       ) : (
-        <div className="space-y-10">
+        <div className="space-y-4">
           {trips.map((t) => (
-            <div key={t.id} className="animate-fade-up">
-              <div className="mb-4">
-                <div className="eyebrow mb-1 flex items-center gap-1.5">
-                  <MapPin className="w-3 h-3" /> {t.destination}
-                </div>
-                <h2 className="font-display text-2xl">{t.name}</h2>
-                <p className="text-sm text-ink-600">
-                  {format(new Date(t.start_date), 'MMM d')} – {format(new Date(t.end_date), 'MMM d, yyyy')}
-                </p>
-              </div>
-
-              {t.generated_outfits?.packing_notes && (
-                <p className="text-sm text-ink-600 italic border-l border-ivory-300 pl-4 mb-6">
-                  {t.generated_outfits.packing_notes}
-                </p>
-              )}
-
-              {t.selected_item_ids?.length > 0 && (
-                <div className="mb-6">
-                  <div className="label mb-3">What to pack</div>
-                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
-                    {t.selected_item_ids.map((iid: string) => {
-                      const it = itemLookup[iid];
-                      return it ? <ItemCard key={iid} {...it} /> : null;
-                    })}
+            <Link
+              key={t.id}
+              href={`/trips/${t.id}`}
+              className="card p-5 block hover:shadow-md transition-shadow group animate-fade-up"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <div className="eyebrow mb-1 flex items-center gap-1.5 text-pink-700">
+                    <MapPin className="w-3 h-3" /> {t.destination}
                   </div>
+                  <h2 className="font-display text-2xl mb-1 truncate">{t.name}</h2>
+                  <p className="text-sm text-ink-600">
+                    {format(new Date(t.start_date), 'MMM d')} – {format(new Date(t.end_date), 'MMM d, yyyy')}
+                    {t.selected_item_ids && t.selected_item_ids.length > 0 && (
+                      <span className="ml-3 text-ink-400">· {t.selected_item_ids.length} pieces</span>
+                    )}
+                  </p>
+                  {t.generated_outfits?.packing_notes && (
+                    <p className="text-xs text-ink-400 italic mt-2 line-clamp-2">
+                      {t.generated_outfits.packing_notes}
+                    </p>
+                  )}
                 </div>
-              )}
-
-              {t.generated_outfits?.day_outfits?.length > 0 && (
-                <div className="space-y-5">
-                  <div className="label">Day by day</div>
-                  {t.generated_outfits.day_outfits.map((d: any) => (
-                    <div key={d.date}>
-                      <div className="font-display text-lg mb-2">
-                        {format(new Date(d.date), 'EEE, MMM d')}
-                      </div>
-                      <div className="grid grid-cols-4 gap-2 mb-2">
-                        {(d.outfit_item_ids ?? []).map((iid: string) => {
-                          const it = itemLookup[iid];
-                          return it ? <ItemCard key={iid} {...it} /> : null;
-                        })}
-                      </div>
-                      {d.reasoning && (
-                        <p className="text-sm text-ink-600 italic">{d.reasoning}</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                <ArrowRight className="w-5 h-5 text-pink-300 group-hover:text-pink-500 transition-colors flex-shrink-0 mt-1" />
+              </div>
+            </Link>
           ))}
         </div>
       )}
@@ -108,6 +88,10 @@ export default function TripsPage() {
     </div>
   );
 }
+
+// =============================================================
+// New trip creation dialog (unchanged from previous)
+// =============================================================
 
 function NewTripDialog({ onClose }: { onClose: () => void }) {
   const [form, setForm] = useState({
@@ -181,12 +165,24 @@ function NewTripDialog({ onClose }: { onClose: () => void }) {
       setSaving(false);
       return;
     }
+    const json = await res.json().catch(() => null);
     onClose();
+    if (json?.id) {
+      // Land them on the detail page so they can see the plan (or the
+      // generation_error message) and start editing right away.
+      window.location.href = `/trips/${json.id}`;
+    }
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-ink-900/30 flex items-end md:items-center justify-center" onClick={onClose}>
-      <div className="bg-white w-full md:max-w-lg md:mx-4 p-6 max-h-[90vh] overflow-y-auto animate-fade-up" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 z-50 bg-ink-900/30 flex items-end md:items-center justify-center"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white w-full md:max-w-lg md:mx-4 p-6 max-h-[90vh] overflow-y-auto animate-fade-up"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="eyebrow mb-1">Plan trip</div>
         <h2 className="font-display text-2xl mb-6">Where to?</h2>
         <div className="space-y-4">

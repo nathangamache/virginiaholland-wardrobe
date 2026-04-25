@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { X, RefreshCw, AlertCircle } from 'lucide-react';
+import { useDialog } from '@/components/DialogProvider';
 import {
   savePending,
   getPending,
@@ -46,6 +47,7 @@ const SEASONS = ['spring', 'summer', 'fall', 'winter'];
 function NewItemInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { confirm } = useDialog();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -332,7 +334,13 @@ function NewItemInner() {
   }
 
   async function discard() {
-    if (!confirm('Discard this upload?')) return;
+    const ok = await confirm({
+      title: 'Discard this upload?',
+      body: 'The photo and any tags you filled in will be lost.',
+      confirmLabel: 'Discard',
+      danger: true,
+    });
+    if (!ok) return;
     if (pendingId) {
       try {
         await deletePending(pendingId);
