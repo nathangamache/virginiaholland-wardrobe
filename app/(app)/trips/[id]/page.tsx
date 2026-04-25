@@ -358,7 +358,7 @@ export default function TripDetailPage({ params }: { params: Promise<{ id: strin
           <div className="label flex items-center gap-1.5 mb-3">
             <Cloud className="w-3 h-3" /> Forecast
           </div>
-          <div className="overflow-x-auto -mx-2 px-2">
+          <div className="overflow-x-auto scrollbar-hide -mx-2 px-2">
             <div className="flex gap-3 min-w-min">
               {trip.weather_forecast.map((d) => (
                 <div key={d.date} className="text-center flex-shrink-0 w-20">

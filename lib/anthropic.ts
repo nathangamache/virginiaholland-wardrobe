@@ -8,6 +8,79 @@ function client(): Anthropic {
   return _client;
 }
 
+/**
+ * Counter that increments on every Anthropic API call. Used to give each
+ * call a stable identifier in the logs so you can trace which client request
+ * triggered it.
+ */
+let _anthropicCallCount = 0;
+
+/**
+ * Wrapper around `client().messages.create()` that logs every call.
+ *
+ * Each call prints a single line with:
+ *   - sequential call number (since process start)
+ *   - the caller label (e.g. "rankOutfits", "tagItemImage")
+ *   - the model used
+ *   - the route file that triggered it (extracted from the stack)
+ *   - duration on completion
+ *
+ * If you suspect API leakage, grep pm2 logs for `[anthropic]` to see every
+ * call in chronological order. Sudden bursts or unexpected sources will be
+ * obvious.
+ */
+async function anthropicCall(
+  label: string,
+  params: Anthropic.MessageCreateParamsNonStreaming
+): Promise<Anthropic.Message> {
+  _anthropicCallCount++;
+  const id = _anthropicCallCount;
+  const route = inferCallerRoute();
+  const t0 = Date.now();
+  console.log(
+    `[anthropic #${id}] CALL label=${label} model=${params.model} route=${route}`
+  );
+  try {
+    const result = await client().messages.create(params);
+    const duration = Date.now() - t0;
+    const usage = result.usage;
+    console.log(
+      `[anthropic #${id}] DONE  label=${label} duration=${duration}ms in=${usage?.input_tokens ?? '?'}t out=${usage?.output_tokens ?? '?'}t`
+    );
+    return result;
+  } catch (e: any) {
+    console.error(
+      `[anthropic #${id}] FAIL  label=${label} duration=${Date.now() - t0}ms error=${e?.message}`
+    );
+    throw e;
+  }
+}
+
+/**
+ * Walk the V8 stack trace and find the first frame outside this file. That
+ * tells us which API route is making the call. Returns "<unknown>" if we
+ * can't figure it out — better than crashing the request.
+ */
+function inferCallerRoute(): string {
+  const stack = new Error().stack ?? '';
+  const lines = stack.split('\n').slice(2); // skip "Error" line + this fn
+  for (const line of lines) {
+    // Look for app/api/.../route.ts or app/.../page.tsx
+    const m = line.match(/\(([^)]*\/(app)\/[^)]+)\)/) ?? line.match(/\s+at\s+([^\s]*\/(app)\/[^\s]+)/);
+    if (m && m[1]) {
+      // Pull just the meaningful suffix: app/api/recommend/route.ts:LINE
+      const path = m[1].replace(/^.*\/(?=app\/)/, '').replace(/\?.*$/, '');
+      return path;
+    }
+    // Also accept lib/* callers (e.g. an internal helper that calls another)
+    const libMatch = line.match(/\(([^)]*\/lib\/[^)]+)\)/);
+    if (libMatch && libMatch[1]) {
+      return libMatch[1].replace(/^.*\/(?=lib\/)/, '');
+    }
+  }
+  return '<unknown>';
+}
+
 // Two-model setup:
 //   FAST  = image tagging on upload + wishlist gap analysis (frequent, low-stakes)
 //   SMART = outfit ranking + packing plans (aesthetic + multi-day reasoning)
@@ -146,7 +219,7 @@ const TAG_SYSTEM = `You are a wardrobe cataloging assistant. You will be given a
 Return ONLY the JSON object, no preamble, no markdown fences.`;
 
 export async function tagItemImage(imageBase64: string, mediaType: string): Promise<TaggedItem> {
-  const message = await client().messages.create({
+  const message = await anthropicCall('tagItemImage', {
     model: MODEL_TAG,
     max_tokens: 800,
     system: TAG_SYSTEM,
@@ -209,16 +282,23 @@ export async function rankOutfits(
 ): Promise<RankedOutfit[]> {
   const system = `You are styling a curated wardrobe for a young woman in her early 20s — college student, taste-conscious, leans Parisian-feminine and casually elevated. She values pieces that look pulled together without being fussy.
 
-Your job: rank the candidate outfits and return the top ${topN}.
+Your job: rank the candidate outfits and return ALL of them (sorted best-first), each with an honest score and reasoning.
 
-Be a critical stylist, not a polite one. It is far better to score a bad outfit 25 than to give every outfit a 70+. Use the full 0-100 range. If only one or two candidates are genuinely good, score the rest below 50 — they will not be shown.
+Score the outfits on a 0-100 quality scale. Treat the score as a percentage match to "what a thoughtful stylist would actually pick for this person on this day":
+  - 90-100: Truly excellent. Coherent aesthetic, clean color story, weather-appropriate, the kind of outfit she'd be happy to be photographed in.
+  - 75-89: Solid. Works well, no obvious flaws, but not exciting.
+  - 60-74: Acceptable. Some weakness — a slight aesthetic mismatch, a not-quite-right color, etc.
+  - 40-59: Wearable but flawed. Don't recommend unless options are limited.
+  - 0-39: Bad. Aesthetic clash, inappropriate for context, or chaotic styling.
 
-A good outfit:
-- Has a coherent aesthetic (don't mix sporty with feminine, or bohemian with formal)
-- Has a clean color story — typically one "hero" color or two that share a tone (warm-and-cream, all-cool-tones, etc.) with the rest as neutrals
-- Has at most ONE patterned/printed piece. Two prints clash unless they're explicitly part of a print-mixing concept.
-- Suits the actual context: athleisure pants do not belong on a casual-day outfit unless paired with intentional athleisure styling. Loungewear stays at home.
-- Layers make sense: don't pair a delicate cardigan with a sporty hoodie over the same outfit; that's two outerwear-types fighting.
+Use the FULL range. If only one or two candidates are genuinely good, the rest should score below 75. We will display the top 3 by default but may show more if multiple genuinely score ≥ 90.
+
+Style criteria for a good outfit:
+- Coherent aesthetic — don't mix sporty with feminine, or bohemian with formal
+- Clean color story — typically one "hero" color or two that share a tone (warm-and-cream, all-cool-tones, etc.) with the rest as neutrals
+- At most ONE patterned/printed piece. Two prints clash unless intentionally style-mixed.
+- Suits the actual context: athleisure pants don't belong on a casual-day outfit unless paired with intentional athleisure styling. Loungewear stays at home.
+- Layers make sense: don't pair a delicate cardigan with a sporty hoodie; that's two outerwear-types fighting.
 
 Reject (low score) outfits that:
 - Mix three or more aesthetics
@@ -229,18 +309,21 @@ Reject (low score) outfits that:
 
 Weather context: ${Math.round(context.temp_avg_f)}°F, ${context.summary}${context.precip_chance > 30 ? `, ${context.precip_chance}% precip` : ''}${context.occasion ? `. Occasion: ${context.occasion}` : ''}
 
-In your reasoning, be specific and honest. If something is "off" call it out — even if you're including the outfit in the top ${topN} because the closet is small, name the weakness so the user understands the tradeoff.
+CRITICAL — reasoning must be self-contained:
+The user only ever sees ONE outfit's reasoning at a time, so each reasoning string MUST stand alone. Do NOT reference other candidate IDs (no "c61", "c12", "outfit 3", etc.). Do NOT compare to other candidates ("same problem as c61", "less versatile than the smocked dress"). Each reasoning explains why THIS outfit works (or doesn't) using only the pieces visible in this outfit and the weather/occasion context.
 
-Return ONLY a JSON array, no preamble:
+Be specific and honest. If something is "off" name it directly — if a top reads more "going out" than "casual day," say that, but don't compare to a different candidate.
+
+Return ONLY a JSON array of ALL candidates ranked best-first, no preamble:
 [
-  { "id": "<outfit id>", "score": <0-100 integer>, "reasoning": "<one or two natural sentences>" }
+  { "id": "<outfit id>", "score": <0-100 integer>, "reasoning": "<one or two natural sentences, self-contained>" }
 ]`;
 
   const user = JSON.stringify({ context, candidates }, null, 2);
 
-  const message = await client().messages.create({
+  const message = await anthropicCall('rankOutfits', {
     model: MODEL_RANK,
-    max_tokens: 1500,
+    max_tokens: 2500, // larger because we now ask for all candidates ranked, not just top N
     system,
     messages: [{ role: 'user', content: user }],
   });
@@ -285,7 +368,7 @@ Return ONLY a JSON array:
 
   // First attempt with the normal prompt
   try {
-    const message = await client().messages.create({
+    const message = await anthropicCall('suggestWishlist', {
       model: MODEL_WISHLIST,
       max_tokens: 1500,
       system: baseSystem,
@@ -309,7 +392,7 @@ IMPORTANT OVERRIDES FOR THIS RESPONSE:
 - Suggestions do not need to be perfect matches to existing pieces — they just need to be thoughtful recommendations for a high-quality curated wardrobe.
 - You MUST return a JSON array matching the schema above. No commentary, no questions, no prose explanations, no markdown code fences. ONLY the JSON array.`;
 
-    const message = await client().messages.create({
+    const message = await anthropicCall('suggestWishlist:retry', {
       model: MODEL_WISHLIST,
       max_tokens: 1500,
       system: fallbackSystem,
@@ -404,7 +487,7 @@ Category: ${suggestion.category}
 ${suggestion.reason ? `Why needed: ${suggestion.reason}\n` : ''}${suggestion.brand_suggestions?.length ? `Brand hints: ${suggestion.brand_suggestions.join(', ')}\n` : ''}${suggestion.price_range ? `Budget: ${suggestion.price_range}\n` : ''}
 Search the web and return 3-6 concrete products.`;
 
-  const message = await client().messages.create({
+  const message = await anthropicCall('findProductsForSuggestion', {
     model: MODEL_WISHLIST,
     max_tokens: 4000,
     system,
@@ -517,7 +600,7 @@ Return ONLY a JSON object:
 
   const user = JSON.stringify({ trip: tripContext, closet: JSON.parse(closetJson) });
 
-  const message = await client().messages.create({
+  const message = await anthropicCall('planPacking', {
     model: MODEL_PACKING,
     max_tokens: 2500,
     system,

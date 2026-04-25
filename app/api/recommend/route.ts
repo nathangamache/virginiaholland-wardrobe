@@ -82,25 +82,45 @@ export async function GET(req: NextRequest) {
 
   let ranked: Array<{ id: string; score: number; reasoning: string }> = [];
   try {
-    ranked = await rankOutfits(
-      candidates,
-      {
-        temp_avg_f: today.temp_avg_f,
-        summary: today.summary,
-        precip_chance: today.precip_chance,
-        occasion,
-      },
-      3
-    );
+    // Claude now returns ALL candidates ranked best-first; we apply the
+    // display threshold below.
+    ranked = await rankOutfits(candidates, {
+      temp_avg_f: today.temp_avg_f,
+      summary: today.summary,
+      precip_chance: today.precip_chance,
+      occasion,
+    });
   } catch (e) {
     console.error('rank error', e);
     ranked = candidates.slice(0, 3).map((c) => ({ id: c.id, score: 50, reasoning: '' }));
   }
 
+  // Sort by score descending so we know the order. (Claude is asked to return
+  // them sorted but we sort here too as a safety net in case of model drift.)
+  ranked.sort((a, b) => b.score - a.score);
+
+  // Display logic:
+  //   - Always show at least the top 3
+  //   - If more than 3 candidates score >= 90, show all of them (up to 6) so
+  //     genuinely great outfits aren't hidden just because there are several
+  //   - Cap at 6 even if many score high, to avoid overwhelming the user
+  const QUALITY_THRESHOLD = 90;
+  const MIN_RESULTS = 3;
+  const MAX_RESULTS = 6;
+  const aboveThreshold = ranked.filter((r) => r.score >= QUALITY_THRESHOLD);
+  const display =
+    aboveThreshold.length >= MIN_RESULTS
+      ? aboveThreshold.slice(0, MAX_RESULTS)
+      : ranked.slice(0, MIN_RESULTS);
+
   const candidateMap = Object.fromEntries(candidates.map((c) => [c.id, c]));
-  const results = ranked
+  const results = display
     .map((r) => ({ ...r, outfit: candidateMap[r.id] }))
     .filter((r) => r.outfit);
+
+  console.log(
+    `[recommend] ranked=${ranked.length}, above${QUALITY_THRESHOLD}=${aboveThreshold.length}, displaying=${results.length}`
+  );
 
   const response = { weather: today, season, results };
 

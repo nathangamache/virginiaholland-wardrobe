@@ -160,3 +160,16 @@
   .bg-clay-300\/10 { background-color: rgba(247, 168, 190, 0.1); }
   .bg-clay-500 { background-color: #ec2878; }
 }
+
+/* Hide scrollbars on horizontal-scroll containers (filter pills, weather strip,
+   etc.) so they don't visually overlap content beneath. The container is still
+   scrollable — just no visible scrollbar chrome. */
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;  /* IE / old Edge */
+    scrollbar-width: none;     /* Firefox */
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;             /* Chrome, Safari, modern Edge */
+  }
+}

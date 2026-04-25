@@ -99,7 +99,7 @@ export default function ClosetPage() {
               </div>
             </div>
           </div>
-          <div className="flex gap-3 overflow-x-auto -mx-1 px-1 pb-1">
+          <div className="flex gap-3 overflow-x-auto scrollbar-hide -mx-1 px-1 pb-1">
             {pending.map((p) => (
               <PendingCard key={p.id} item={p} onDiscard={() => discardPending(p.id)} />
             ))}
@@ -107,7 +107,7 @@ export default function ClosetPage() {
         </div>
       )}
 
-      <div className="mb-6 -mx-6 px-6 overflow-x-auto">
+      <div className="mb-6 -mx-6 px-6 overflow-x-auto scrollbar-hide">
         <div className="flex gap-2 whitespace-nowrap">
           {CATEGORIES.map((c) => (
             <button

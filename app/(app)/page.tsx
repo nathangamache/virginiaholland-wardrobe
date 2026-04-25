@@ -188,7 +188,7 @@ export default function HomePage() {
         <div className="space-y-10">
           <div className="flex items-baseline justify-between">
             <div>
-              <div className="eyebrow">— Three for you —</div>
+              <div className="eyebrow">— {recommendationsHeadline(data.results)} —</div>
               {data.cached && data.cached_at && (
                 <div className="text-[10px] uppercase tracking-[0.15em] text-ink-400 mt-1">
                   Generated {timeAgoShort(data.cached_at)} ago
@@ -208,7 +208,16 @@ export default function HomePage() {
           {data.results.map((rec, idx) => (
             <div key={rec.id} className="animate-fade-up" style={{ animationDelay: `${idx * 120}ms` }}>
               <div className="flex items-baseline justify-between mb-3">
-                <div className="font-display text-xl">Option {idx + 1}</div>
+                <div className="flex items-baseline gap-3">
+                  <div className="font-display text-xl">Option {idx + 1}</div>
+                  <div
+                    className={`text-[10px] uppercase tracking-[0.15em] ${
+                      rec.score >= 90 ? 'text-pink-700' : 'text-ink-400'
+                    }`}
+                  >
+                    {rec.score}% match
+                  </div>
+                </div>
                 <button
                   onClick={() => logWear(rec, idx)}
                   disabled={loggingIdx === idx}
@@ -217,7 +226,7 @@ export default function HomePage() {
                   {loggingIdx === idx ? 'Logging…' : 'Wear this'}
                 </button>
               </div>
-              <div className="grid grid-cols-1 min-[400px]:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 md:gap-3 mb-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mb-3">
                 {rec.outfit.items.map((it) => {
                   const meta = itemLookup[it.id];
                   return (
@@ -246,6 +255,37 @@ export default function HomePage() {
       )}
     </div>
   );
+}
+
+/**
+ * Pick a playful headline based on the number of recommendations we're
+ * showing. Each count (3-6) has a small pool of phrases; we deterministically
+ * pick one based on the result IDs so the same set of recs always gets the
+ * same headline (no jarring re-roll on every re-render). When the cache
+ * regenerates and produces a new set, the headline naturally varies.
+ *
+ * Counts below 3 shouldn't happen (MIN_RESULTS = 3 server-side) but we
+ * handle them gracefully just in case.
+ */
+function recommendationsHeadline(results: { id: string }[]): string {
+  const n = results.length;
+  const pools: Record<number, string[]> = {
+    1: ['One for you', 'A single pick', "Today's edit"],
+    2: ['A pair for you', 'Two to consider', "Today's twosome"],
+    3: ['Three for you', 'A trio to try', 'Three to choose from', 'Three picks'],
+    4: ['Four for you', 'A foursome to try', 'Four to choose from', 'Four picks'],
+    5: ['Five for you', 'A handful of options', 'Five to choose from', 'Five picks'],
+    6: ['Six for you', 'Half a dozen options', 'A full set of six', 'Six picks for today'],
+  };
+  const pool = pools[n] ?? [`${n} picks for you`];
+  // Deterministic hash of the IDs so the same recommendation set keeps the
+  // same headline across re-renders, but a fresh generation gets a fresh phrase.
+  const seed = results.map((r) => r.id).join('|');
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  }
+  return pool[Math.abs(hash) % pool.length];
 }
 
 /**
