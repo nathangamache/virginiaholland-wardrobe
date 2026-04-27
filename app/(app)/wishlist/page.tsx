@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Plus, Sparkles, X, ExternalLink, Search, Globe, ChevronRight } from 'lucide-react';
+import { Plus, Sparkles, X, ExternalLink, Search, Globe, ChevronRight, Pencil, Check } from 'lucide-react';
 
 interface Wish {
   id: string;
@@ -22,6 +22,7 @@ export default function WishlistPage() {
   const [suggesting, setSuggesting] = useState(false);
   const [pendingSuggestions, setPendingSuggestions] = useState<any[]>([]);
   const [showAdd, setShowAdd] = useState(false);
+  const [editing, setEditing] = useState<Wish | null>(null);
   const [suggestError, setSuggestError] = useState<string | null>(null);
   const [stillThinking, setStillThinking] = useState(false);
 
@@ -169,12 +170,218 @@ export default function WishlistPage() {
       ) : (
         <div className="space-y-3">
           {items.map((w) => (
-            <WishCard key={w.id} wish={w} onRemove={() => remove(w.id)} />
+            <WishCard
+              key={w.id}
+              wish={w}
+              onRemove={() => remove(w.id)}
+              onEdit={() => setEditing(w)}
+            />
           ))}
         </div>
       )}
 
       {showAdd && <AddDialog onClose={() => { setShowAdd(false); load(); }} />}
+      {editing && (
+        <EditDialog
+          wish={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Edit dialog — same shape as AddDialog but pre-fills from existing values
+// and PATCHes instead of POSTs. Lets the user change the description,
+// category, reason, link, brands, price range, priority, and notes.
+// ---------------------------------------------------------------------------
+function EditDialog({
+  wish,
+  onClose,
+  onSaved,
+}: {
+  wish: Wish;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [description, setDescription] = useState(wish.description);
+  const [category, setCategory] = useState(wish.category ?? '');
+  const [reason, setReason] = useState(wish.reason ?? '');
+  const [link, setLink] = useState(wish.link ?? '');
+  const [brands, setBrands] = useState(wish.brand_suggestions?.join(', ') ?? '');
+  const [priceRange, setPriceRange] = useState(wish.price_range ?? '');
+  const [priority, setPriority] = useState(wish.priority ?? 3);
+  const [notes, setNotes] = useState(wish.notes ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    if (!description.trim()) {
+      setError('Description is required.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/wishlist/${wish.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          description: description.trim(),
+          category: category.trim() || null,
+          reason: reason.trim() || null,
+          link: link.trim() || null,
+          brand_suggestions: brands
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+          price_range: priceRange.trim() || null,
+          priority,
+          notes: notes.trim() || null,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? `Save failed (${res.status})`);
+      }
+      onSaved();
+    } catch (e: any) {
+      setError(e?.message ?? 'Could not save.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-[2px] animate-fade-up"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white max-w-md w-full p-6 shadow-xl relative max-h-[90vh] overflow-y-auto"
+        style={{ borderRadius: '4px' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 w-8 h-8 flex items-center justify-center text-ink-400 hover:text-pink-700 transition-colors"
+          aria-label="Close"
+        >
+          <X className="w-4 h-4" strokeWidth={1.5} />
+        </button>
+
+        <div className="eyebrow mb-2">Edit wishlist item</div>
+        <div className="wordmark italic text-2xl text-ink-900 mb-6 pr-8 leading-tight">
+          Refine the details
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="label block mb-1">Description</label>
+            <input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="input"
+              placeholder="What you're looking for…"
+            />
+          </div>
+          <div>
+            <label className="label block mb-1">Category (optional)</label>
+            <input
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="input"
+              placeholder="e.g. shirt, pants, shoes"
+            />
+          </div>
+          <div>
+            <label className="label block mb-1">Why you want it (optional)</label>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              className="input min-h-[60px] resize-none"
+              placeholder="A note to your future self…"
+            />
+          </div>
+          <div>
+            <label className="label block mb-1">Link (optional)</label>
+            <input
+              value={link}
+              onChange={(e) => setLink(e.target.value)}
+              className="input"
+              placeholder="https://…"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label block mb-1">Brands</label>
+              <input
+                value={brands}
+                onChange={(e) => setBrands(e.target.value)}
+                className="input"
+                placeholder="Sezane, Reformation"
+              />
+            </div>
+            <div>
+              <label className="label block mb-1">Price range</label>
+              <input
+                value={priceRange}
+                onChange={(e) => setPriceRange(e.target.value)}
+                className="input"
+                placeholder="$80–150"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="label block mb-1">Priority</label>
+            <div className="flex gap-2">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setPriority(n)}
+                  className={`px-3.5 py-1.5 text-xs uppercase tracking-[0.12em] border transition-all ${
+                    priority === n
+                      ? 'bg-pink-500 text-white border-pink-500'
+                      : 'border-pink-200 text-ink-600 hover:border-pink-400'
+                  }`}
+                  style={{ borderRadius: '2px' }}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="label block mb-1">Notes</label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              className="input min-h-[60px] resize-none"
+            />
+          </div>
+
+          {error && (
+            <div className="card-pink p-3 text-sm text-ink-800">{error}</div>
+          )}
+
+          <div className="flex gap-2 justify-end">
+            <button onClick={onClose} className="btn-ghost py-2 px-4 text-sm">
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              disabled={saving}
+              className="btn py-2 px-4 text-sm disabled:opacity-50"
+            >
+              <Check className="w-4 h-4" />
+              {saving ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -182,7 +389,15 @@ export default function WishlistPage() {
 // ---------------------------------------------------------------------------
 // Saved wishlist card — text-only, link is the focus
 // ---------------------------------------------------------------------------
-function WishCard({ wish, onRemove }: { wish: Wish; onRemove: () => void }) {
+function WishCard({
+  wish,
+  onRemove,
+  onEdit,
+}: {
+  wish: Wish;
+  onRemove: () => void;
+  onEdit: () => void;
+}) {
   return (
     <div className="card p-5 group">
       <div className="flex items-start justify-between gap-4 mb-1">
@@ -198,13 +413,22 @@ function WishCard({ wish, onRemove }: { wish: Wish; onRemove: () => void }) {
             </span>
           )}
         </div>
-        <button
-          onClick={onRemove}
-          className="-m-2 p-2 text-ink-400 hover:text-pink-700 transition-colors flex-shrink-0"
-          aria-label="Remove"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            onClick={onEdit}
+            className="-m-2 p-2 text-ink-400 hover:text-pink-700 transition-colors"
+            aria-label="Edit"
+          >
+            <Pencil className="w-4 h-4" strokeWidth={1.5} />
+          </button>
+          <button
+            onClick={onRemove}
+            className="-m-2 p-2 text-ink-400 hover:text-pink-700 transition-colors"
+            aria-label="Remove"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       <div className="wordmark italic text-lg text-ink-900 leading-tight mb-1">
